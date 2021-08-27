@@ -40,8 +40,6 @@ GoawayStatusCode errorCodeToGoaway(ErrorCode code) {
       break;
     case ErrorCode::HTTP_1_1_REQUIRED:
       break;
-    case ErrorCode::_SPDY_INVALID_STREAM:
-      break;
   }
   return GOAWAY_PROTOCOL_ERROR;
 }
@@ -59,6 +57,7 @@ ResetStatusCode errorCodeToReset(ErrorCode code) {
     case ErrorCode::SETTINGS_TIMEOUT:
       break;
     case ErrorCode::STREAM_CLOSED:
+      // Invalid stream comes through here
       return RST_STREAM_ALREADY_CLOSED;
     case ErrorCode::FRAME_SIZE_ERROR:
       return RST_FRAME_TOO_LARGE;
@@ -76,8 +75,6 @@ ResetStatusCode errorCodeToReset(ErrorCode code) {
       return RST_INVALID_CREDENTIALS;
     case ErrorCode::HTTP_1_1_REQUIRED:
       break;
-    case ErrorCode::_SPDY_INVALID_STREAM:
-      return RST_INVALID_STREAM;
   }
   return RST_PROTOCOL_ERROR;
 }
@@ -101,7 +98,7 @@ ErrorCode rstToErrorCode(uint32_t code) {
     case RST_PROTOCOL_ERROR:
       break;
     case RST_INVALID_STREAM:
-      return ErrorCode::_SPDY_INVALID_STREAM;
+      return ErrorCode::STREAM_CLOSED;
     case RST_REFUSED_STREAM:
       return ErrorCode::REFUSED_STREAM;
     case RST_UNSUPPORTED_VERSION:
@@ -157,6 +154,7 @@ folly::Optional<proxygen::spdy::SettingsId> httpToSpdySettingsId(
     case proxygen::SettingsId::THRIFT_CHANNEL_ID:
       return folly::none;
     case proxygen::SettingsId::_HQ_QPACK_BLOCKED_STREAMS:
+    case proxygen::SettingsId::_HQ_DATAGRAM:
     case proxygen::SettingsId::SETTINGS_HTTP_CERT_AUTH:
       return folly::none;
   }

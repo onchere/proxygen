@@ -8,6 +8,7 @@
 
 #include <proxygen/lib/http/codec/HTTP1xCodec.h>
 
+#include <folly/String.h>
 #include <folly/portability/GTest.h>
 #include <proxygen/lib/http/HTTPHeaderSize.h>
 #include <proxygen/lib/http/HTTPMessage.h>
@@ -139,6 +140,30 @@ TEST(HTTP1xCodecTest, Test09Resp) {
   EXPECT_EQ(callbacks.messageComplete, 0);
   codec.onIngressEOF();
   EXPECT_EQ(callbacks.messageComplete, 1);
+}
+
+TEST(HTTP1xCodecTest, TestResponseSplit) {
+  HTTP1xCodec downcodec(TransportDirection::DOWNSTREAM);
+  HTTP1xCodec upcodec(TransportDirection::UPSTREAM);
+
+  HTTP1xCodecCallback callbacks;
+  downcodec.setCallback(&callbacks);
+  auto id = upcodec.createStream();
+
+  HTTPMessage req;
+  req.setHTTPVersion(1, 1);
+  req.setMethod("GET");
+  req.setURL("/foo");
+  req.getHeaders().set("InjectHeader", "Value\r\nx: new");
+  folly::IOBufQueue buf;
+  upcodec.generateHeader(buf, id, req);
+  downcodec.onIngress(*buf.front());
+  EXPECT_EQ(callbacks.headersComplete, 1);
+  EXPECT_EQ(callbacks.messageComplete, 1);
+  // make sure that the header is not sent on the wire.
+  // Otherwise it would be parsed as two different headers with HTTP <= 1.1
+  EXPECT_EQ(callbacks.msg_->getHeaders().getSingleOrEmpty("InjectHeader"), "");
+  EXPECT_EQ(callbacks.msg_->getHeaders().getSingleOrEmpty("x"), "");
 }
 
 TEST(HTTP1xCodecTest, TestO9NoVersion) {
@@ -957,6 +982,331 @@ TEST(HTTP1xCodecTest, GenerateExtraHeaders) {
   EXPECT_EQ("1000",
             callbacks.msg_->getHeaders().getSingleOrEmpty(
                 HTTP_HEADER_CONTENT_LENGTH));
+}
+
+TEST(HTTP1xCodecTest, UpgradeHeaderCaseInsensitive) {
+  auto result = checkForProtocolUpgrade("h2c,WebSocket", "websocket", false);
+  ASSERT_TRUE(result.has_value());
+  // We always return the server string so compare against that.
+  EXPECT_EQ("websocket", result->second);
+}
+
+TEST(HTTP1xCodecTest, HugeURL) {
+  HTTP1xCodec codec(TransportDirection::DOWNSTREAM);
+  MockHTTPCodecCallback callbacks;
+  codec.setCallback(&callbacks);
+  std::string request = folly::to<std::string>("GET /echo?q=",
+                                               std::string(84 * 1024, 'a'),
+                                               " HTTP/1.1\r\n"
+                                               "Host: foo\r\n\r\n");
+  EXPECT_CALL(callbacks, onMessageBegin(1, _));
+  EXPECT_CALL(callbacks, onError(1, _, _))
+      .WillOnce(Invoke(
+          [&](HTTPCodec::StreamID, std::shared_ptr<HTTPException> error, bool) {
+            EXPECT_EQ(error->getHttpStatusCode(), 400);
+          }));
+  folly::IOBufQueue input{folly::IOBufQueue::cacheChainLength()};
+  input.append(folly::IOBuf::wrapBuffer(request.data(), request.size()));
+  // TODO: seems we only check size when we're unfinished at the end of an IOBuf
+  while (input.chainLength() > 0) {
+    auto head = input.splitAtMost(4096);
+    codec.onIngress(*head);
+  }
+}
+
+TEST(HTTP1xCodecTest, UTF8Chars) {
+  // Non-ascii characters should be pct-encoded according to RFC3986. S220852
+  // was caused partly due to UTF-8 characters found in the URL.
+  HTTP1xCodec codec(TransportDirection::DOWNSTREAM);
+  MockHTTPCodecCallback callbacks;
+  codec.setCallback(&callbacks);
+  auto utf8_string = u8"Ñoño";
+  auto request =
+      folly::to<std::string>("GET /echo?dl=", utf8_string, " HTTP/1.1\r\n\r\n");
+  // TODO(T84547894) Actually, should be an error
+  EXPECT_CALL(callbacks, onMessageBegin(1, _));
+  EXPECT_CALL(callbacks, onHeadersComplete(1, _));
+  EXPECT_CALL(callbacks, onMessageComplete(1, _));
+  codec.onIngress(*folly::IOBuf::wrapBuffer(request.data(), request.size()));
+  std::string uriEscapedStr;
+  folly::uriEscape(utf8_string, uriEscapedStr);
+  request = folly::to<std::string>(
+      "GET /echo?dl=", uriEscapedStr, " HTTP/1.1\r\n\r\n");
+  EXPECT_CALL(callbacks, onMessageBegin(2, _));
+  EXPECT_CALL(callbacks, onHeadersComplete(2, _));
+  EXPECT_CALL(callbacks, onMessageComplete(2, _));
+  codec.onIngress(*folly::IOBuf::wrapBuffer(request.data(), request.size()));
+}
+
+TEST(HTTP1xCodecTest, ExtraCRLF) {
+  HTTP1xCodec codec(TransportDirection::DOWNSTREAM);
+  MockHTTPCodecCallback callbacks;
+  codec.setCallback(&callbacks);
+  std::string requests = folly::to<std::string>(
+      "\r"
+      "GET /echo HTTP/1.1\r\n\r\n",
+      "\n"
+      "GET /echo HTTP/1.1\r\n\r\n",
+      "\r\n"
+      "GET /echo HTTP/1.1\r\n\r\n",
+      "\r\n\r\n"
+      "GET /echo HTTP/1.1\r\n\r\n",
+      "\r\n\r\n");
+  EXPECT_CALL(callbacks, onMessageBegin(_, _)).Times(4);
+  EXPECT_CALL(callbacks, onHeadersComplete(_, _)).Times(4);
+  EXPECT_CALL(callbacks, onMessageComplete(_, _)).Times(4);
+  codec.onIngress(*folly::IOBuf::wrapBuffer(requests.data(), requests.size()));
+}
+
+TEST(HTTP1xCodecTest, ContentLengthLast) {
+  HTTP1xCodec codec(TransportDirection::DOWNSTREAM);
+  HTTP1xCodecCallback callbacks;
+  codec.setCallback(&callbacks);
+  std::string request = "GET /echo HTTP/1.1\r\n\r\n";
+  codec.onIngress(*folly::IOBuf::wrapBuffer(request.data(), request.size()));
+  HTTPCodec::StreamID id = 1;
+  HTTPMessage resp;
+  resp.setStatusCode(200);
+  resp.getHeaders().set(HTTP_HEADER_CONTENT_LENGTH, "100");
+  resp.getHeaders().set("a", "b");
+  resp.getHeaders().set("z", "x");
+  folly::IOBufQueue buf{folly::IOBufQueue::cacheChainLength()};
+  codec.generateHeader(buf, id, resp, true);
+  auto length = buf.chainLength();
+  std::string clHeader = "Content-Length: 100";
+  auto expectedPos = length - clHeader.size() - 4 /* \r\n\r\n */;
+  EXPECT_EQ(buf.move()->moveToFbString().find(clHeader), expectedPos);
+}
+
+TEST(HTTP1xCodecTest, HugeChunkLength) {
+  HTTP1xCodec codec(TransportDirection::DOWNSTREAM);
+  MockHTTPCodecCallback callbacks;
+  codec.setCallback(&callbacks);
+  std::string request = folly::to<std::string>(
+      "POST /echo HTTP/1.1\r\n"
+      "Transfer-Encoding: chunked\r\n"
+      "\r\n"
+      "ffffffffffffffff\r\n");
+  EXPECT_CALL(callbacks, onMessageBegin(1, _));
+  EXPECT_CALL(callbacks, onError(1, _, _))
+      .WillOnce(Invoke(
+          [&](HTTPCodec::StreamID, std::shared_ptr<HTTPException> error, bool) {
+            // TODO: It would probably be nicer to return a 413 code.
+            EXPECT_EQ(error->getHttpStatusCode(), 400);
+          }));
+  codec.onIngress(*folly::IOBuf::wrapBuffer(request.data(), request.size()));
+}
+
+TEST(HTTP1xCodecTest, HugeContentLength) {
+  HTTP1xCodec codec(TransportDirection::DOWNSTREAM);
+  MockHTTPCodecCallback callbacks;
+  codec.setCallback(&callbacks);
+  std::string request = folly::to<std::string>(
+      "POST /echo HTTP/1.1\r\n"
+      "Content-Length: ffffffffffffffff\r\n");
+  EXPECT_CALL(callbacks, onMessageBegin(1, _));
+  EXPECT_CALL(callbacks, onError(1, _, _))
+      .WillOnce(Invoke(
+          [&](HTTPCodec::StreamID, std::shared_ptr<HTTPException> error, bool) {
+            // TODO: It would probably be nicer to return a 413 code.
+            EXPECT_EQ(error->getHttpStatusCode(), 400);
+          }));
+  codec.onIngress(*folly::IOBuf::wrapBuffer(request.data(), request.size()));
+}
+
+TEST(HTTP1xCodecTest, Dechunk) {
+  // Send a 1.0 request and a 1.1 chunked response.  The codec should dechunk
+  HTTP1xCodec upCodec(TransportDirection::UPSTREAM, false);
+  folly::IOBufQueue buf{folly::IOBufQueue::cacheChainLength()};
+  HTTPMessage req;
+  req.setHTTPVersion(1, 0);
+  req.setURL("/");
+  req.setMethod(HTTPMethod::GET);
+  HTTPCodec::StreamID id = upCodec.createStream();
+  upCodec.generateHeader(buf, id, req, false);
+
+  HTTP1xCodec codec(TransportDirection::DOWNSTREAM);
+  HTTP1xCodecCallback callbacks;
+  codec.setCallback(&callbacks);
+  codec.onIngress(*buf.front());
+  buf.move();
+
+  HTTPMessage resp;
+  resp.setStatusCode(200);
+  resp.setHTTPVersion(1, 1);
+  resp.setIsChunked(true);
+  resp.getHeaders().add(HTTP_HEADER_TRANSFER_ENCODING, "chunked");
+  std::string body(10, 'a');
+  codec.generateHeader(buf, id, resp, false);
+  codec.generateChunkHeader(buf, id, 1);
+  codec.generateBody(buf,
+                     id,
+                     folly::IOBuf::wrapBuffer(body.data(), body.size()),
+                     folly::none,
+                     false);
+  codec.generateChunkTerminator(buf, id);
+  codec.generateEOM(buf, id);
+
+  StrictMock<MockHTTPCodecCallback> upCallbacks;
+  upCodec.setCallback(&upCallbacks);
+  // No chunk header callbacks
+  EXPECT_CALL(upCallbacks, onMessageBegin(1, _));
+  EXPECT_CALL(upCallbacks, onHeadersComplete(1, _))
+      .WillOnce(Invoke([](HTTPCodec::StreamID,
+                          std::shared_ptr<HTTPMessage> resp) {
+        EXPECT_FALSE(resp->getHeaders().exists(HTTP_HEADER_TRANSFER_ENCODING));
+        EXPECT_EQ(resp->getHeaders().getSingleOrEmpty(HTTP_HEADER_CONNECTION),
+                  "close");
+      }));
+  EXPECT_CALL(upCallbacks, onBody(1, _, _));
+  while (!buf.empty()) {
+    upCodec.onIngress(*buf.front());
+    buf.pop_front();
+  }
+  EXPECT_CALL(upCallbacks, onMessageComplete(1, _));
+  upCodec.onIngressEOF();
+}
+
+TEST(HTTP1xCodecTest, Chunkify) {
+  // Send a 1.1 request and a 1.0 non-chunked response.  The codec should chunk
+  HTTP1xCodec upCodec(TransportDirection::UPSTREAM, false);
+  folly::IOBufQueue buf{folly::IOBufQueue::cacheChainLength()};
+  HTTPMessage req;
+  req.setHTTPVersion(1, 1);
+  req.setURL("/");
+  req.setMethod(HTTPMethod::GET);
+  HTTPCodec::StreamID id = upCodec.createStream();
+  upCodec.generateHeader(buf, id, req, false);
+
+  HTTP1xCodec codec(TransportDirection::DOWNSTREAM, /*force11*/ true);
+  HTTP1xCodecCallback callbacks;
+  codec.setCallback(&callbacks);
+  codec.onIngress(*buf.front());
+  buf.move();
+
+  HTTPMessage resp;
+  resp.setStatusCode(200);
+  resp.setHTTPVersion(1, 0);
+  resp.setIsChunked(false);
+  std::string body(10, 'a');
+  codec.generateHeader(buf, id, resp, false);
+  codec.generateBody(buf,
+                     id,
+                     folly::IOBuf::wrapBuffer(body.data(), body.size()),
+                     folly::none,
+                     false);
+  codec.generateEOM(buf, id);
+
+  StrictMock<MockHTTPCodecCallback> upCallbacks;
+  upCodec.setCallback(&upCallbacks);
+  // No chunk header callbacks
+  EXPECT_CALL(upCallbacks, onMessageBegin(1, _));
+  EXPECT_CALL(upCallbacks, onHeadersComplete(1, _))
+      .WillOnce(Invoke([](HTTPCodec::StreamID,
+                          std::shared_ptr<HTTPMessage> resp) {
+        EXPECT_TRUE(resp->getHeaders().exists(HTTP_HEADER_TRANSFER_ENCODING));
+        EXPECT_EQ(resp->getHeaders().getSingleOrEmpty(HTTP_HEADER_CONNECTION),
+                  "keep-alive");
+      }));
+  EXPECT_CALL(upCallbacks, onChunkHeader(1, _));
+  EXPECT_CALL(upCallbacks, onBody(1, _, _));
+  EXPECT_CALL(upCallbacks, onChunkComplete(1));
+  EXPECT_CALL(upCallbacks, onMessageComplete(1, _));
+  while (!buf.empty()) {
+    upCodec.onIngress(*buf.front());
+    buf.pop_front();
+  }
+}
+
+TEST(HTTP1xCodecTest, Chunkify100) {
+  // Send a 1.1 request and a 1.0 non-chunked response.  The codec should chunk
+  HTTP1xCodec upCodec(TransportDirection::UPSTREAM, false);
+  folly::IOBufQueue buf{folly::IOBufQueue::cacheChainLength()};
+  HTTPMessage req;
+  req.setHTTPVersion(1, 1);
+  req.setURL("/");
+  req.setMethod(HTTPMethod::GET);
+  req.getHeaders().add(HTTP_HEADER_EXPECT, "100-continue");
+  HTTPCodec::StreamID id = upCodec.createStream();
+  upCodec.generateHeader(buf, id, req, false);
+
+  HTTP1xCodec codec(TransportDirection::DOWNSTREAM, /*force11*/ true);
+  HTTP1xCodecCallback callbacks;
+  codec.setCallback(&callbacks);
+  codec.onIngress(*buf.front());
+  buf.move();
+
+  HTTPMessage resp;
+  resp.setStatusCode(100);
+  resp.setIsChunked(false);
+  codec.generateHeader(buf, id, resp, false);
+
+  resp.setStatusCode(200);
+  resp.setHTTPVersion(1, 0);
+  resp.setIsChunked(false);
+  std::string body(10, 'a');
+  codec.generateHeader(buf, id, resp, false);
+  codec.generateBody(buf,
+                     id,
+                     folly::IOBuf::wrapBuffer(body.data(), body.size()),
+                     folly::none,
+                     false);
+  codec.generateEOM(buf, id);
+
+  StrictMock<MockHTTPCodecCallback> upCallbacks;
+  upCodec.setCallback(&upCallbacks);
+  // No chunk header callbacks
+  EXPECT_CALL(upCallbacks, onMessageBegin(1, _)).Times(2);
+  EXPECT_CALL(upCallbacks, onHeadersComplete(1, _))
+      .WillOnce(
+          Invoke([](HTTPCodec::StreamID, std::shared_ptr<HTTPMessage> resp) {
+            EXPECT_EQ(resp->getStatusCode(), 100);
+            EXPECT_FALSE(resp->getHeaders().exists(HTTP_HEADER_CONNECTION));
+          }))
+      .WillOnce(Invoke([](HTTPCodec::StreamID,
+                          std::shared_ptr<HTTPMessage> resp) {
+        EXPECT_TRUE(resp->getHeaders().exists(HTTP_HEADER_TRANSFER_ENCODING));
+        EXPECT_EQ(resp->getHeaders().getSingleOrEmpty(HTTP_HEADER_CONNECTION),
+                  "keep-alive");
+      }));
+  EXPECT_CALL(upCallbacks, onChunkHeader(1, _));
+  EXPECT_CALL(upCallbacks, onBody(1, _, _));
+  EXPECT_CALL(upCallbacks, onChunkComplete(1));
+  EXPECT_CALL(upCallbacks, onMessageComplete(1, _));
+  while (!buf.empty()) {
+    upCodec.onIngress(*buf.front());
+    buf.pop_front();
+  }
+}
+
+TEST(HTTP1xCodecTest, TrailersNonChunked) {
+  HTTP1xCodec codec(TransportDirection::UPSTREAM);
+  StrictMock<MockHTTPCodecCallback> callbacks;
+  codec.setCallback(&callbacks);
+  HTTPMessage req;
+  auto id = codec.createStream();
+  req.setHTTPVersion(1, 1);
+  req.setMethod(HTTPMethod::GET);
+  req.setURL("/");
+  codec.setCallback(&callbacks);
+  folly::IOBufQueue buf;
+  codec.generateHeader(buf, id, req, true);
+
+  std::string response = folly::to<std::string>(
+      "HTTP/1.1 200 Ok\r\n"
+      "Content-Length: 10\r\n"
+      "\r\n"
+      "aaaaaaaaaa0\r\n"
+      "Trailer-1: trailer\r\n\r\n");
+  EXPECT_CALL(callbacks, onMessageBegin(1, _));
+  EXPECT_CALL(callbacks, onHeadersComplete(1, _));
+  EXPECT_CALL(callbacks, onBody(1, _, _));
+  EXPECT_CALL(callbacks, onMessageComplete(1, _));
+  // Trailers interpreted as another message, and error
+  EXPECT_CALL(callbacks, onMessageBegin(2, _));
+  EXPECT_CALL(callbacks, onError(2, _, _));
+
+  codec.onIngress(*folly::IOBuf::wrapBuffer(response.data(), response.size()));
 }
 
 class ConnectionHeaderTest

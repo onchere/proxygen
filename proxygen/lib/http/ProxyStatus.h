@@ -39,11 +39,13 @@ class ProxyStatus {
   void setStatusType(StatusType statusType);
   ProxyStatus& setProxy(const std::string& proxy);
   ProxyStatus& setUpstreamIP(const std::string& upstreamIP);
+  ProxyStatus& setProxyError(const bool isProxyError);
+  ProxyStatus& setClientAddress(const std::string& clientAddr);
   virtual ProxyStatus& setProxyStatusParameter(folly::StringPiece name,
                                                const std::string& text);
 
   // Serialize ProxyStatus to std::string
-  // e.g. proxy-status: destination_unavailable; \
+  // e.g. proxy-status: destination_unavailable;
   // e_proxy="devbig623.prn2"; e_upip="fe:de:fa:ce:fe:de:fa:ce"
   std::string toString() const;
 

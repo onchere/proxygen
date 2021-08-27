@@ -116,9 +116,9 @@ TEST_F(HQFramerTest, TestWriteFrameHeaderManual) {
 TEST_F(HQFramerTest, TestWriteUnframedBytes) {
   auto data = IOBuf::copyBuffer("I just met you and this is crazy.");
   auto dataLen = data->length();
-  auto res = writeUnframedBytes(queue_, std::move(data));
-  EXPECT_FALSE(res.hasError());
-  EXPECT_EQ(*res, dataLen);
+  auto res = data->computeChainDataLength();
+  EXPECT_EQ(res, dataLen);
+  queue_.append(std::move(data));
   EXPECT_EQ("I just met you and this is crazy.",
             queue_.front()->clone()->moveToFbString().toStdString());
 }
@@ -130,6 +130,20 @@ TEST_F(HQFramerTest, DataFrameZeroLength) {
   std::unique_ptr<IOBuf> outBuf;
   Cursor cursor(queue_.front());
   parse(folly::none, parseData, outHeader, outBuf);
+}
+
+TEST_F(HQFramerTest, TestWriteGreaseFrame) {
+  auto res = writeGreaseFrame(queue_);
+  EXPECT_FALSE(res.hasError());
+
+  Cursor cursor(queue_.front());
+  auto type = quic::decodeQuicInteger(cursor);
+  EXPECT_TRUE(type.hasValue());
+  EXPECT_TRUE(hq::isGreaseId(type->first));
+
+  auto length = quic::decodeQuicInteger(cursor);
+  EXPECT_TRUE(length.hasValue());
+  EXPECT_EQ(length->first, 0);
 }
 
 struct FrameHeaderLengthParams {

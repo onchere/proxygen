@@ -32,8 +32,11 @@ DEFINE_string(path,
 DEFINE_int32(connect_timeout, 2000, "(HQClient) connect timeout in ms");
 DEFINE_string(httpversion, "1.1", "HTTP version string");
 DEFINE_string(protocol, "", "HQ protocol version e.g. h3-29 or hq-fb-05");
-DEFINE_int32(draft_version, 0, "Draft version to use, 0 is default");
-DEFINE_bool(use_draft, true, "Use draft version as first version");
+DEFINE_int32(quic_version,
+             0,
+             "QUIC version to use. Numbers > 25 are treated as draft versions. "
+             "0 is default");
+DEFINE_bool(use_version, true, "Use set QUIC version as first version");
 DEFINE_string(logdir, "/tmp/logs", "Directory to store connection logs");
 DEFINE_string(outdir, "", "Directory to store responses");
 DEFINE_bool(log_response,
@@ -55,7 +58,6 @@ DEFINE_uint32(num_gro_buffers,
               "Number of GRO buffers");
 
 DEFINE_int32(txn_timeout, 120000, "HTTP Transaction Timeout");
-DEFINE_string(httpauth, "", "HTTP Authority field, defaults to --host");
 DEFINE_string(headers, "", "List of N=V headers separated by ,");
 DEFINE_bool(pacing, false, "Whether to enable pacing on HQServer");
 DEFINE_int32(pacing_timer_tick_interval_us, 200, "Pacing timer resolution");
@@ -210,19 +212,21 @@ void initializeCommonSettings(HQParams& hqParams) {
 void initializeTransportSettings(HQParams& hqParams) {
   // Transport section
   hqParams.quicVersions = {quic::QuicVersion::MVFST,
-                           quic::QuicVersion::MVFST_D24,
                            quic::QuicVersion::MVFST_EXPERIMENTAL,
+                           quic::QuicVersion::QUIC_V1,
                            quic::QuicVersion::QUIC_DRAFT,
                            quic::QuicVersion::QUIC_DRAFT_LEGACY};
-  if (FLAGS_draft_version != 0) {
-    auto draftVersion =
-        static_cast<quic::QuicVersion>(0xff000000 | FLAGS_draft_version);
+  if (FLAGS_quic_version != 0) {
+    auto quicVersion =
+        FLAGS_quic_version > 25
+            ? static_cast<quic::QuicVersion>(0xff000000 | FLAGS_quic_version)
+            : static_cast<quic::QuicVersion>(FLAGS_quic_version);
 
-    bool useDraftFirst = FLAGS_use_draft;
-    if (useDraftFirst) {
-      hqParams.quicVersions.insert(hqParams.quicVersions.begin(), draftVersion);
+    bool useVersionFirst = FLAGS_use_version;
+    if (useVersionFirst) {
+      hqParams.quicVersions.insert(hqParams.quicVersions.begin(), quicVersion);
     } else {
-      hqParams.quicVersions.push_back(draftVersion);
+      hqParams.quicVersions.push_back(quicVersion);
     }
   }
 
@@ -232,6 +236,8 @@ void initializeTransportSettings(HQParams& hqParams) {
   } else {
     hqParams.supportedAlpns = {"h1q-fb",
                                "h1q-fb-v2",
+                               proxygen::kH3,
+                               proxygen::kHQ,
                                proxygen::kH3FBCurrentDraft,
                                proxygen::kH3CurrentDraft,
                                proxygen::kH3LegacyDraft,

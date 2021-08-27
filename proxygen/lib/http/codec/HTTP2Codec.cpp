@@ -70,10 +70,11 @@ size_t HTTP2Codec::onIngress(const folly::IOBuf& buf) {
   Cursor cursor(&buf);
   size_t parsed = 0;
   ErrorCode connError = ErrorCode::NO_ERROR;
-  for (auto bufLen = cursor.totalLength(); connError == ErrorCode::NO_ERROR;
-       bufLen = cursor.totalLength()) {
+  auto bufLen = cursor.totalLength();
+  while (connError == ErrorCode::NO_ERROR) {
+    size_t remaining = bufLen - parsed;
     if (frameState_ == FrameState::UPSTREAM_CONNECTION_PREFACE) {
-      if (bufLen >= http2::kConnectionPreface.length()) {
+      if (remaining >= http2::kConnectionPreface.length()) {
         auto test = cursor.readFixedString(http2::kConnectionPreface.length());
         parsed += http2::kConnectionPreface.length();
         if (test != http2::kConnectionPreface) {
@@ -88,7 +89,7 @@ size_t HTTP2Codec::onIngress(const folly::IOBuf& buf) {
     } else if (frameState_ == FrameState::FRAME_HEADER ||
                frameState_ == FrameState::DOWNSTREAM_CONNECTION_PREFACE) {
       // Waiting to parse the common frame header
-      if (bufLen >= http2::kFrameHeaderSize) {
+      if (remaining >= http2::kFrameHeaderSize) {
         connError = parseFrameHeader(cursor, curHeader_);
         parsed += http2::kFrameHeaderSize;
         if (frameState_ == FrameState::DOWNSTREAM_CONNECTION_PREFACE &&
@@ -116,23 +117,25 @@ size_t HTTP2Codec::onIngress(const folly::IOBuf& buf) {
                                    static_cast<uint8_t>(curHeader_.type));
         }
 
-        frameState_ = (curHeader_.type == http2::FrameType::DATA)
-                          ? FrameState::DATA_FRAME_DATA
-                          : FrameState::FRAME_DATA;
-        pendingDataFrameBytes_ = curHeader_.length;
-        pendingDataFramePaddingBytes_ = 0;
+        if (curHeader_.type == http2::FrameType::DATA) {
+          frameState_ = FrameState::DATA_FRAME_DATA;
+          pendingDataFrameBytes_ = curHeader_.length;
+          pendingDataFramePaddingBytes_ = 0;
+        } else {
+          frameState_ = FrameState::FRAME_DATA;
+        }
 #ifndef NDEBUG
         receivedFrameCount_++;
 #endif
       } else {
         break;
       }
-    } else if (frameState_ == FrameState::DATA_FRAME_DATA && bufLen > 0 &&
-               (bufLen < curHeader_.length ||
+    } else if (frameState_ == FrameState::DATA_FRAME_DATA && remaining > 0 &&
+               (remaining < curHeader_.length ||
                 pendingDataFrameBytes_ < curHeader_.length)) {
       // FrameState::DATA_FRAME_DATA with partial data only
       size_t dataParsed = 0;
-      connError = parseDataFrameData(cursor, bufLen, dataParsed);
+      connError = parseDataFrameData(cursor, remaining, dataParsed);
       if (dataParsed == 0 && pendingDataFrameBytes_ > 0) {
         // We received only the padding byte, we will wait for more
         break;
@@ -146,7 +149,7 @@ size_t HTTP2Codec::onIngress(const folly::IOBuf& buf) {
              // or FrameState::DATA_FRAME_DATA with all data available
       // Already parsed the common frame header
       const auto frameLen = curHeader_.length;
-      if (bufLen >= frameLen) {
+      if (remaining >= frameLen) {
         connError = parseFrame(cursor);
         parsed += curHeader_.length;
         frameState_ = FrameState::FRAME_HEADER;
@@ -1520,11 +1523,10 @@ size_t HTTP2Codec::generateRstStream(folly::IOBufQueue& writeBuf,
     VLOG(2) << "sending RST_STREAM with code=" << getErrorCodeString(statusCode)
             << " for stream=" << stream << " user-agent=" << userAgent_;
   }
-  auto code = http2::errorCodeToReset(statusCode);
   return generateHeaderCallbackWrapper(
       stream,
       http2::FrameType::RST_STREAM,
-      http2::writeRstStream(writeBuf, stream, code));
+      http2::writeRstStream(writeBuf, stream, statusCode));
 }
 
 size_t HTTP2Codec::generateGoaway(folly::IOBufQueue& writeBuf,
@@ -1576,11 +1578,11 @@ size_t HTTP2Codec::generateGoaway(folly::IOBufQueue& writeBuf,
             << " user-agent=" << userAgent_;
   }
 
-  auto code = http2::errorCodeToGoaway(statusCode);
   return generateHeaderCallbackWrapper(
       0,
       http2::FrameType::GOAWAY,
-      http2::writeGoaway(writeBuf, lastStream, code, std::move(debugData)));
+      http2::writeGoaway(
+          writeBuf, lastStream, statusCode, std::move(debugData)));
 }
 
 size_t HTTP2Codec::generatePingRequest(folly::IOBufQueue& writeBuf,

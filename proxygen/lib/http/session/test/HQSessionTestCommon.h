@@ -46,6 +46,7 @@ struct TestParams {
   uint64_t unidirectionalStreamsCredit{kDefaultUnidirStreamCredit};
   std::size_t numBytesOnPushStream{kUnlimited};
   bool expectOnTransportReady{true};
+  bool datagrams_{false};
 };
 
 std::string prBodyScriptToName(const std::vector<uint8_t>& bodyScript);
@@ -114,6 +115,10 @@ class HQSessionTest
       nextUnidirectionalStreamId_ = 3;
     } else {
       LOG(FATAL) << "wrong TransportEnum";
+    }
+
+    if (GetParam().datagrams_) {
+      egressSettings_.setSetting(proxygen::SettingsId::_HQ_DATAGRAM, 1);
     }
 
     if (!IS_H1Q_FB_V1) {
@@ -222,7 +227,7 @@ class HQSessionTest
 
   const std::string getProtocolString() const {
     if (GetParam().alpn_ == "h3") {
-      return proxygen::kH3FBCurrentDraft;
+      return proxygen::kH3;
     }
     return GetParam().alpn_;
   }
@@ -353,6 +358,33 @@ class HQSessionTest
       const testing::TestWithParam<TestParams>* base = this;
       return base->GetParam();
     }
+  }
+
+  std::unique_ptr<folly::IOBuf> getH3Datagram(
+      uint64_t streamId, std::unique_ptr<folly::IOBuf> datagram) {
+    // Prepend the H3 Datagram header to the datagram payload
+    // HTTP/3 Datagram {
+    //   Quarter Stream ID (i),
+    //   [Context ID (i)],
+    //   HTTP/3 Datagram Payload (..),
+    // }
+    quic::Buf headerBuf = quic::Buf(folly::IOBuf::create(0));
+    quic::BufAppender appender(headerBuf.get(),
+                               proxygen::kMaxDatagramHeaderSize);
+    auto streamIdRes = quic::encodeQuicInteger(
+        streamId / 4, [&](auto val) { appender.writeBE(val); });
+    if (streamIdRes.hasError()) {
+      return nullptr;
+    }
+    // Always use context-id = 0 for now
+    auto ctxIdRes =
+        quic::encodeQuicInteger(0, [&](auto val) { appender.writeBE(val); });
+    if (ctxIdRes.hasError()) {
+      return nullptr;
+    }
+    quic::BufQueue queue(std::move(headerBuf));
+    queue.append(std::move(datagram));
+    return queue.move();
   }
 
  protected:

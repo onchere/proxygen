@@ -31,7 +31,7 @@ void QPACKDecoder::decodeStreaming(uint64_t streamID,
     VLOG(5) << "requiredInsertCount=" << requiredInsertCount
             << " > insertCount=" << table_.getInsertCount() << ", queuing";
     if (queue_.size() >= maxBlocking_) {
-      VLOG(2) << "QPACK queue is full size=" << queue_.size()
+      VLOG(2) << "QPACK queue full size=" << queue_.size()
               << " maxBlocking_=" << maxBlocking_;
       err_ = HPACK::DecodeError::TOO_MANY_BLOCKING;
       completeDecode(HeaderCodec::Type::QPACK, streamingCb, 0, 0, 0, false);
@@ -101,7 +101,7 @@ uint32_t QPACKDecoder::decodePrefix(HPACKDecodeBuffer& dbuf) {
   if (neg) {
     // delta must be smaller than RIC
     if (delta >= requiredInsertCount) {
-      LOG(ERROR) << "Invalid delta=" << delta
+      LOG(ERROR) << "Received invalid delta=" << delta
                  << " requiredInsertCount=" << requiredInsertCount;
       err_ = HPACK::DecodeError::INVALID_INDEX;
       return 0;
@@ -136,7 +136,7 @@ void QPACKDecoder::decodeStreamingImpl(uint32_t requiredInsertCount,
   while (!hasError() && !dbuf.empty()) {
     emittedSize += decodeHeaderQ(dbuf, streamingCb);
     if (emittedSize > maxUncompressed_) {
-      LOG(ERROR) << "exceeded uncompressed size limit of " << maxUncompressed_
+      LOG(ERROR) << "Exceeded uncompressed size limit of " << maxUncompressed_
                  << " bytes";
       err_ = HPACK::DecodeError::HEADERS_TOO_LARGE;
       break;
@@ -298,7 +298,7 @@ uint32_t QPACKDecoder::decodeLiteralHeaderQ(
       nameIndex++;
       // validate the index
       if (!isValid(isStaticName, nameIndex, aboveBase)) {
-        LOG(ERROR) << "received invalid index: " << nameIndex;
+        LOG(ERROR) << "Received invalid index=" << nameIndex;
         err_ = HPACK::DecodeError::INVALID_INDEX;
         return 0;
       }
@@ -415,6 +415,7 @@ std::unique_ptr<folly::IOBuf> QPACKDecoder::encodeHeaderAck(
 std::unique_ptr<folly::IOBuf> QPACKDecoder::encodeCancelStream(
     uint64_t streamId) {
   // Remove this stream from the queue
+  VLOG(6) << "encodeCancelStream id=" << streamId;
   auto it = queue_.begin();
   while (it != queue_.end()) {
     if (it->second.streamID == streamId) {

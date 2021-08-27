@@ -38,6 +38,7 @@
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 
 static http_parser *parser;
+static uint8_t parser_options = 0;
 
 struct message {
   const char *name; // for debugging purposes
@@ -613,7 +614,7 @@ const struct message requests[] =
   ,.body= ""
   }
 
-#if !HTTP_PARSER_STRICT
+#if !HTTP_PARSER_STRICT_URL
 #define UTF8_PATH_REQ 24
 , {.name= "utf-8 path request"
   ,.type= HTTP_REQUEST
@@ -631,7 +632,9 @@ const struct message requests[] =
              }
   ,.body= ""
   }
+#endif  /* !HTTP_PARSER_STRICT_URL */
 
+#if !HTTP_PARSER_STRICT_HOSTNAME
 #define HOSTNAME_UNDERSCORE 25
 , {.name = "hostname underscore"
   ,.type= HTTP_REQUEST
@@ -652,7 +655,7 @@ const struct message requests[] =
              }
   ,.body= ""
   }
-#endif  /* !HTTP_PARSER_STRICT */
+#endif  /* !HTTP_PARSER_STRICT_HOSTNAME */
 
 #define PATCH_REQ 26
 , {.name = "PATCH request"
@@ -1575,7 +1578,9 @@ parser_init (enum http_parser_type type)
   parser = malloc(sizeof(http_parser));
 
   http_parser_init(parser, type);
-
+#if HTTP_PARSER_STRICT_URL
+  parser_options |= F_HTTP_PARSER_OPTIONS_URL_STRICT;
+#endif
   memset(&messages, 0, sizeof messages);
 
 }
@@ -1592,7 +1597,8 @@ size_t parse (const char *buf, size_t len)
 {
   size_t nparsed;
   currently_parsing_eof = (len == 0);
-  nparsed = http_parser_execute(parser, &settings, buf, len);
+  nparsed = http_parser_execute_options(
+    parser, &settings, parser_options, buf, len);
   return nparsed;
 }
 
@@ -1600,7 +1606,8 @@ size_t parse_count_body (const char *buf, size_t len)
 {
   size_t nparsed;
   currently_parsing_eof = (len == 0);
-  nparsed = http_parser_execute(parser, &settings_count_body, buf, len);
+  nparsed = http_parser_execute_options(
+    parser, &settings_count_body, parser_options, buf, len);
   return nparsed;
 }
 
@@ -1611,7 +1618,8 @@ size_t parse_pause (const char *buf, size_t len)
 
   currently_parsing_eof = (len == 0);
   current_pause_parser = &s;
-  nparsed = http_parser_execute(parser, current_pause_parser, buf, len);
+  nparsed = http_parser_execute_options(
+    parser, current_pause_parser, parser_options, buf, len);
   return nparsed;
 }
 
@@ -2255,7 +2263,7 @@ const struct url_test url_tests[] =
   ,.rv=1 /* s_dead */
   }
 
-#if HTTP_PARSER_STRICT
+#if HTTP_PARSER_STRICT_URL
 
 , {.name="tab in URL"
   ,.url="/foo\tbar/"
@@ -2267,7 +2275,7 @@ const struct url_test url_tests[] =
   ,.rv=1 /* s_dead */
   }
 
-#else /* !HTTP_PARSER_STRICT */
+#else /* !HTTP_PARSER_STRICT_URL */
 
 , {.name="tab in URL"
   ,.url="/foo\tbar/"
@@ -2338,10 +2346,18 @@ test_parse_url (void)
     test = &url_tests[i];
     memset(&u, 0, sizeof(u));
 
+#if HTTP_PARSER_STRICT_URL
+    rv = http_parser_parse_url_options(test->url,
+                                       strlen(test->url),
+                                       test->is_connect,
+                                       &u,
+                                       F_PARSE_URL_OPTIONS_URL_STRICT);
+#else
     rv = http_parser_parse_url(test->url,
                                strlen(test->url),
                                test->is_connect,
                                &u);
+#endif
 
     if (test->rv == 0) {
       if (rv != 0) {
@@ -2489,7 +2505,7 @@ test_simple (const char *buf, enum http_errno err_expected)
   /* In strict mode, allow us to pass with an unexpected HPE_STRICT as
    * long as the caller isn't expecting success.
    */
-#if HTTP_PARSER_STRICT
+#if HTTP_PARSER_STRICT_URL || HTTP_PARSER_STRICT_HOSTNAME
   if (err_expected != err && err_expected != HPE_OK && err != HPE_STRICT) {
 #else
   if (err_expected != err) {
@@ -2499,6 +2515,37 @@ test_simple (const char *buf, enum http_errno err_expected)
     exit(1);
   }
 }
+
+#if HTTP_PARSER_STRICT_URL
+void
+test_lax_in_strict_mode (const char *buf, enum http_errno err_expected)
+{
+  parser_init(HTTP_REQUEST);
+  // clear strict flag
+  parser_options = 0;
+
+  size_t parsed;
+  int pass;
+  enum http_errno err;
+
+  parsed = parse(buf, strlen(buf));
+  pass = (parsed == strlen(buf));
+  err = HTTP_PARSER_ERRNO(parser);
+  parsed = parse(NULL, 0);
+  pass &= (parsed == 0);
+
+  parser_free();
+
+  /* In strict mode, allow us to pass with an unexpected HPE_STRICT as
+   * long as the caller isn't expecting success.
+   */
+  if (err_expected != err && err_expected != HPE_OK && err != HPE_STRICT) {
+    fprintf(stderr, "\n*** test_simple expected %s, but saw %s ***\n\n%s\n",
+        http_errno_name(err_expected), http_errno_name(err), buf);
+    exit(1);
+  }
+}
+#endif
 
 void
 test_no_overflow_parse_url (void)
@@ -2531,7 +2578,8 @@ test_header_overflow_error (int req)
   size_t parsed;
   const char *buf;
   buf = req ? "GET / HTTP/1.1\r\n" : "HTTP/1.0 200 OK\r\n";
-  parsed = http_parser_execute(&parser, &settings_null, buf, strlen(buf));
+  parsed = http_parser_execute_options(
+    &parser, &settings_null, parser_options, buf, strlen(buf));
   assert(parsed == strlen(buf));
 
   buf = "header-key: header-value\r\n";
@@ -2539,7 +2587,8 @@ test_header_overflow_error (int req)
 
   int i;
   for (i = 0; i < 10000; i++) {
-    parsed = http_parser_execute(&parser, &settings_null, buf, buflen);
+    parsed = http_parser_execute_options(
+      &parser, &settings_null, parser_options, buf, buflen);
     if (parsed != buflen) {
       //fprintf(stderr, "error found on iter %d\n", i);
       assert(HTTP_PARSER_ERRNO(&parser) == HPE_HEADER_OVERFLOW);
@@ -2561,18 +2610,21 @@ test_no_overflow_long_body (int req, size_t length)
   char buf1[3000];
   size_t buf1len = snprintf(buf1, sizeof(buf1), "%s\r\nConnection: Keep-Alive\r\nContent-Length: %zu\r\n\r\n",
       req ? "POST / HTTP/1.0" : "HTTP/1.0 200 OK", length);
-  parsed = http_parser_execute(&parser, &settings_null, buf1, buf1len);
+  parsed = http_parser_execute_options(
+    &parser, &settings_null, parser_options, buf1, buf1len);
   if (parsed != buf1len)
     goto err;
 
   for (i = 0; i < length; i++) {
     char foo = 'a';
-    parsed = http_parser_execute(&parser, &settings_null, &foo, 1);
+    parsed = http_parser_execute_options(
+      &parser, &settings_null, parser_options, &foo, 1);
     if (parsed != 1)
       goto err;
   }
 
-  parsed = http_parser_execute(&parser, &settings_null, buf1, buf1len);
+  parsed = http_parser_execute_options(
+    &parser, &settings_null, parser_options, buf1, buf1len);
   if (parsed != buf1len) goto err;
   return;
 
@@ -3202,6 +3254,27 @@ main (void)
            , &requests[PREFIX_NEWLINE_GET ]
            , &requests[CONNECT_REQUEST]
            );
+
+#if HTTP_PARSER_STRICT_URL
+  const char *high_ascii_url =
+    "GET /high_ascii\xff HTTP/1.1\r\n"
+    "Host: www.example.com\r\n"
+    "\r\n";
+  test_lax_in_strict_mode(high_ascii_url, HPE_OK);
+  test_simple(high_ascii_url, HPE_INVALID_PATH);
+  const char *ht_ff_url =
+    "GET /ht_ff\x09\x12 HTTP/1.1\r\n"
+    "Host: www.example.com\r\n"
+    "\r\n";
+  test_lax_in_strict_mode(ht_ff_url, HPE_OK);
+  test_simple(ht_ff_url, HPE_INVALID_PATH);
+  const char *normal_url =
+    "GET /normal HTTP/1.1\r\n"
+    "Host: www.example.com\r\n"
+    "\r\n";
+  test_lax_in_strict_mode(normal_url, HPE_OK);
+  test_simple(normal_url, HPE_OK);
+#endif
 
   puts("requests okay");
 

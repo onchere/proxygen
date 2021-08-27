@@ -65,6 +65,7 @@ enum class SettingId : uint64_t {
   HEADER_TABLE_SIZE = 0x01,
   MAX_HEADER_LIST_SIZE = 0x06,
   QPACK_BLOCKED_STREAMS = 0x07,
+  H3_DATAGRAM = 0x276,
 };
 
 using SettingValue = uint64_t;
@@ -224,18 +225,6 @@ WriteResult writeData(folly::IOBufQueue& writeBuf,
                       std::unique_ptr<folly::IOBuf> data) noexcept;
 
 /**
- * Write unframed bytes into the buffer.
- *
- * @param writeBuf The output queue to write to. It may grow or add
- *                 underlying buffers inside this function.
- * @param data The body data to write out, cannot be nullptr
- * @return The number of bytes written to writeBuf if successful, a quic error
- * otherwise
- */
-WriteResult writeUnframedBytes(folly::IOBufQueue& writeBuf,
-                               std::unique_ptr<folly::IOBuf> data) noexcept;
-
-/**
  * Generate an entire HEADER frame, including the common frame header.
  *
  * @param writeBuf The output queue to write to. It may grow or add
@@ -330,5 +319,15 @@ WriteResult writePushPriorityUpdate(folly::IOBufQueue& writeBuf,
 
 WriteResult writeStreamPreface(folly::IOBufQueue& writeBuf,
                                uint64_t streamPreface) noexcept;
+
+/**
+ * Generate a grease frame, including the common frame header.
+ *
+ * @param writeBuf The output queue to write to. It may grow or add
+ *                 underlying buffers inside this function.
+ * @return The number of bytes written to writeBuf if successful, a quic error
+ * otherwise
+ */
+WriteResult writeGreaseFrame(folly::IOBufQueue& writeBuf) noexcept;
 
 }} // namespace proxygen::hq

@@ -202,7 +202,9 @@ bool HQUpstreamSessionTest::flush(bool eof,
       done = false;
     }
   }
-
+  if (!socketDriver_->inDatagrams_.empty()) {
+    socketDriver_->addDatagramsAvailableReadEvent(initialDelay);
+  }
   if (extraEventsFn) {
     extraEventsFn();
   }
@@ -218,7 +220,6 @@ StrictMock<MockController>& HQUpstreamSessionTest::getMockController() {
   return controllerContainer_.mockController;
 }
 
-// Use this test class for h1q-fb only tests
 // Use this test class for h1q-fb-v1 only tests
 using HQUpstreamSessionTestH1qv1 = HQUpstreamSessionTest;
 // Use this test class for h1q-fb-v2 and hq tests
@@ -227,6 +228,8 @@ using HQUpstreamSessionTestH1qv2HQ = HQUpstreamSessionTest;
 using HQUpstreamSessionTestHQ = HQUpstreamSessionTest;
 // Use this test class for hq only tests with qpack encoder streams on/off
 using HQUpstreamSessionTestQPACK = HQUpstreamSessionTest;
+// Use this test class for hq only tests with Datagram support
+using HQUpstreamSessionTestHQDatagram = HQUpstreamSessionTest;
 
 TEST_P(HQUpstreamSessionTest, SimpleGet) {
   auto handler = openTransaction();
@@ -1056,6 +1059,62 @@ TEST_P(HQUpstreamSessionTestHQ, TestOnStopSendingHTTPRequestRejected) {
   hqSession_->closeWhenIdle();
 }
 
+TEST_P(HQUpstreamSessionTestHQ, TestGreaseFramePerSession) {
+  // a grease frame is created when creating the first transaction
+  auto handler1 = openTransaction();
+  auto streamId1 = handler1->txn_->getID();
+  handler1->txn_->sendHeaders(getGetRequest());
+  handler1->txn_->sendEOM();
+  handler1->expectHeaders();
+  handler1->expectBody();
+  handler1->expectEOM();
+  handler1->expectDetachTransaction();
+  auto resp1 = makeResponse(200, 100);
+  sendResponse(handler1->txn_->getID(),
+               *std::get<0>(resp1),
+               std::move(std::get<1>(resp1)),
+               true);
+  flushAndLoop();
+  FakeHTTPCodecCallback callback1;
+  std::unique_ptr<HQStreamCodec> downstreamCodec =
+      std::make_unique<hq::HQStreamCodec>(
+          streamId1,
+          TransportDirection::DOWNSTREAM,
+          qpackCodec_,
+          encoderWriteBuf_,
+          decoderWriteBuf_,
+          [] { return std::numeric_limits<uint64_t>::max(); },
+          ingressSettings_);
+  downstreamCodec->setCallback(&callback1);
+  downstreamCodec->onIngress(
+      *socketDriver_->streams_[streamId1].writeBuf.front());
+  EXPECT_EQ(callback1.unknownFrames, 1);
+  EXPECT_EQ(callback1.greaseFrames, 1);
+
+  // no grease frame is created when creating the second transaction
+  auto handler2 = openTransaction();
+  auto streamId2 = handler2->txn_->getID();
+  handler2->txn_->sendHeaders(getGetRequest());
+  handler2->txn_->sendEOM();
+  handler2->expectHeaders();
+  handler2->expectBody();
+  handler2->expectEOM();
+  handler2->expectDetachTransaction();
+  auto resp2 = makeResponse(200, 100);
+  sendResponse(handler2->txn_->getID(),
+               *std::get<0>(resp2),
+               std::move(std::get<1>(resp2)),
+               true);
+  flushAndLoop();
+  FakeHTTPCodecCallback callback2;
+  downstreamCodec->setCallback(&callback2);
+  downstreamCodec->onIngress(
+      *socketDriver_->streams_[streamId2].writeBuf.front());
+  EXPECT_EQ(callback2.unknownFrames, 0);
+  EXPECT_EQ(callback2.greaseFrames, 0);
+  hqSession_->closeWhenIdle();
+}
+
 // This test is checking two different scenarios for different protocol
 //   - in HQ we already have sent SETTINGS in SetUp, so tests that multiple
 //     setting frames are not allowed
@@ -1862,6 +1921,137 @@ TEST_P(HQUpstreamSessionTestHQPush, TestOrphanedPushStream) {
   flushAndLoop();
 }
 
+TEST_P(HQUpstreamSessionTestHQ, TestNoDatagram) {
+  EXPECT_FALSE(httpCallbacks_.datagramEnabled);
+  auto handler = openTransaction();
+  EXPECT_EQ(handler->txn_->getDatagramSizeLimit(), 0);
+  auto resp = makeResponse(200, 100);
+  sendResponse(handler->txn_->getID(),
+               *std::get<0>(resp),
+               std::move(std::get<1>(resp)),
+               true);
+  handler->txn_->sendHeaders(getGetRequest());
+  handler->txn_->sendEOM();
+  handler->expectHeaders();
+  handler->expectBody();
+  handler->expectEOM();
+  handler->expectDetachTransaction();
+  hqSession_->closeWhenIdle();
+  flushAndLoop();
+}
+
+TEST_P(HQUpstreamSessionTestHQDatagram, TestDatagramSettings) {
+  EXPECT_TRUE(httpCallbacks_.datagramEnabled);
+  auto handler = openTransaction();
+  EXPECT_GT(handler->txn_->getDatagramSizeLimit(), 0);
+  auto resp = makeResponse(200, 100);
+  sendResponse(handler->txn_->getID(),
+               *std::get<0>(resp),
+               std::move(std::get<1>(resp)),
+               true);
+  handler->txn_->sendHeaders(getGetRequest());
+  handler->txn_->sendEOM();
+  handler->expectHeaders();
+  handler->expectBody();
+  handler->expectEOM();
+  handler->expectDetachTransaction();
+  hqSession_->closeWhenIdle();
+  flushAndLoop();
+}
+
+TEST_P(HQUpstreamSessionTestHQDatagram, TestReceiveDatagram) {
+  EXPECT_TRUE(httpCallbacks_.datagramEnabled);
+  auto handler = openTransaction();
+  auto id = handler->txn_->getID();
+  EXPECT_GT(handler->txn_->getDatagramSizeLimit(), 0);
+  handler->txn_->sendHeaders(getGetRequest());
+  handler->txn_->sendEOM();
+  auto resp = makeResponse(200, 0);
+  sendResponse(id, *std::get<0>(resp), std::move(std::get<1>(resp)), false);
+  handler->expectHeaders();
+  flushAndLoopN(1);
+  auto h3Datagram = getH3Datagram(id, folly::IOBuf::wrapBuffer("testtest", 8));
+  socketDriver_->addDatagram(std::move(h3Datagram));
+  handler->expectDatagram();
+  flushAndLoopN(1);
+  auto it = streams_.find(id);
+  CHECK(it != streams_.end());
+  auto& stream = it->second;
+  stream.readEOF = true;
+  handler->expectEOM();
+  handler->expectDetachTransaction();
+  hqSession_->closeWhenIdle();
+  flushAndLoop();
+}
+
+TEST_P(HQUpstreamSessionTestHQDatagram, TestReceiveEarlyDatagramsSingleStream) {
+  EXPECT_TRUE(httpCallbacks_.datagramEnabled);
+  auto handler = openTransaction();
+  auto id = handler->txn_->getID();
+  EXPECT_GT(handler->txn_->getDatagramSizeLimit(), 0);
+  handler->txn_->sendHeaders(getGetRequest());
+  handler->txn_->sendEOM();
+  for (auto i = 0; i < kDefaultMaxBufferedDatagrams * 2; ++i) {
+    auto h3Datagram =
+        getH3Datagram(id, folly::IOBuf::wrapBuffer("testtest", 8));
+    socketDriver_->addDatagram(std::move(h3Datagram));
+  }
+  flushAndLoopN(1);
+  auto resp = makeResponse(200, 0);
+  sendResponse(id, *std::get<0>(resp), std::move(std::get<1>(resp)), false);
+  handler->expectHeaders();
+  EXPECT_CALL(*handler, onDatagram(testing::_))
+      .Times(kDefaultMaxBufferedDatagrams);
+  flushAndLoopN(1);
+  auto it = streams_.find(id);
+  CHECK(it != streams_.end());
+  auto& stream = it->second;
+  stream.readEOF = true;
+  handler->expectEOM();
+  handler->expectDetachTransaction();
+  hqSession_->closeWhenIdle();
+  flushAndLoop();
+}
+
+TEST_P(HQUpstreamSessionTestHQDatagram, TestReceiveEarlyDatagramsMultiStream) {
+  auto deliveredDatagrams = 0;
+  EXPECT_TRUE(httpCallbacks_.datagramEnabled);
+  std::vector<std::unique_ptr<StrictMock<MockHTTPHandler>>> handlers;
+
+  for (auto i = 0; i < kMaxStreamsWithBufferedDatagrams * 2; ++i) {
+    handlers.emplace_back(openTransaction());
+    auto handler = handlers.back().get();
+    auto id = handler->txn_->getID();
+    EXPECT_GT(handler->txn_->getDatagramSizeLimit(), 0);
+    handler->txn_->sendHeaders(getGetRequest());
+    handler->txn_->sendEOM();
+    auto h3Datagram =
+        getH3Datagram(id, folly::IOBuf::wrapBuffer("testtest", 8));
+    socketDriver_->addDatagram(std::move(h3Datagram));
+    flushAndLoopN(1);
+  }
+
+  for (const auto& handler : handlers) {
+    auto id = handler->txn_->getID();
+    auto resp = makeResponse(200, 0);
+    sendResponse(id, *std::get<0>(resp), std::move(std::get<1>(resp)), false);
+    handler->expectHeaders();
+    EXPECT_CALL(*handler, onDatagram(testing::_))
+        .WillRepeatedly(InvokeWithoutArgs([&]() { deliveredDatagrams++; }));
+    flushAndLoopN(1);
+    auto it = streams_.find(id);
+    CHECK(it != streams_.end());
+    auto& stream = it->second;
+    stream.readEOF = true;
+    handler->expectEOM();
+    handler->expectDetachTransaction();
+    flushAndLoopN(1);
+  }
+  EXPECT_EQ(deliveredDatagrams, kMaxStreamsWithBufferedDatagrams);
+  hqSession_->closeWhenIdle();
+  flushAndLoop();
+}
+
 /**
  * Instantiate the Parametrized test cases
  */
@@ -1869,28 +2059,58 @@ TEST_P(HQUpstreamSessionTestHQPush, TestOrphanedPushStream) {
 // Make sure all the tests keep working with all the supported protocol versions
 INSTANTIATE_TEST_CASE_P(HQUpstreamSessionTest,
                         HQUpstreamSessionTest,
-                        Values(TestParams({.alpn_ = "h1q-fb"}),
-                               TestParams({.alpn_ = "h1q-fb-v2"}),
-                               TestParams({.alpn_ = "h3"})),
+                        Values(
+                            [] {
+                              TestParams tp;
+                              tp.alpn_ = "h1q-fb";
+                              return tp;
+                            }(),
+                            [] {
+                              TestParams tp;
+                              tp.alpn_ = "h1q-fb-v2";
+                              return tp;
+                            }(),
+                            [] {
+                              TestParams tp;
+                              tp.alpn_ = "h3";
+                              return tp;
+                            }()),
                         paramsToTestName);
 
 // Instantiate h1q-fb-v2 and hq only tests (goaway tests)
 INSTANTIATE_TEST_CASE_P(HQUpstreamSessionTest,
                         HQUpstreamSessionTestH1qv2HQ,
-                        Values(TestParams({.alpn_ = "h1q-fb-v2"}),
-                               TestParams({.alpn_ = "h3"})),
+                        Values(
+                            [] {
+                              TestParams tp;
+                              tp.alpn_ = "h1q-fb-v2";
+                              return tp;
+                            }(),
+                            [] {
+                              TestParams tp;
+                              tp.alpn_ = "h3";
+                              return tp;
+                            }()),
                         paramsToTestName);
 
 // Instantiate h1q-fb-v1 only tests
 INSTANTIATE_TEST_CASE_P(HQUpstreamSessionTest,
                         HQUpstreamSessionTestH1qv1,
-                        Values(TestParams({.alpn_ = "h1q-fb"})),
+                        Values([] {
+                          TestParams tp;
+                          tp.alpn_ = "h1q-fb";
+                          return tp;
+                        }()),
                         paramsToTestName);
 
 // Instantiate hq only tests
 INSTANTIATE_TEST_CASE_P(HQUpstreamSessionTest,
                         HQUpstreamSessionTestHQ,
-                        Values(TestParams({.alpn_ = "h3"})),
+                        Values([] {
+                          TestParams tp;
+                          tp.alpn_ = "h3";
+                          return tp;
+                        }()),
                         paramsToTestName);
 
 // Instantiate tests for H3 Push functionality (requires HQ)
@@ -1907,7 +2127,27 @@ INSTANTIATE_TEST_CASE_P(HQUpstreamSessionTest,
 // Instantiate tests with QPACK on/off
 INSTANTIATE_TEST_CASE_P(HQUpstreamSessionTest,
                         HQUpstreamSessionTestQPACK,
-                        Values(TestParams({.alpn_ = "h3"}),
-                               TestParams({.alpn_ = "h3",
-                                           .createQPACKStreams_ = false})),
+                        Values(
+                            [] {
+                              TestParams tp;
+                              tp.alpn_ = "h3";
+                              return tp;
+                            }(),
+                            [] {
+                              TestParams tp;
+                              tp.alpn_ = "h3";
+                              tp.createQPACKStreams_ = false;
+                              return tp;
+                            }()),
+                        paramsToTestName);
+
+// Instantiate h3 datagram tests
+INSTANTIATE_TEST_CASE_P(HQUpstreamSessionTest,
+                        HQUpstreamSessionTestHQDatagram,
+                        Values([] {
+                          TestParams tp;
+                          tp.alpn_ = "h3";
+                          tp.datagrams_ = true;
+                          return tp;
+                        }()),
                         paramsToTestName);

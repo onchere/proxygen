@@ -45,11 +45,18 @@ typedef unsigned __int64 uint64_t;
 namespace proxygen {
 #endif /* __cplusplus */
 
-/* Compile with -DHTTP_PARSER_STRICT=1 to parse URLs and hostnames
+/* Compile with -DHTTP_PARSER_STRICT_URL=1 to parse URLs
  * strictly according to the RFCs
  */
-#ifndef HTTP_PARSER_STRICT
-# define HTTP_PARSER_STRICT 0
+#ifndef HTTP_PARSER_STRICT_URL
+# define HTTP_PARSER_STRICT_URL 0
+#endif
+
+/* Compile with -DHTTP_PARSER_STRICT_HOSTNAME=1 to parse hostnames
+ * strictly according to the RFCs
+ */
+#ifndef HTTP_PARSER_STRICT_HOSTNAME
+# define HTTP_PARSER_STRICT_HOSTNAME 0
 #endif
 
 /* Compile with -DHTTP_PARSER_DEBUG=1 to add extra debugging information to
@@ -299,6 +306,19 @@ size_t http_parser_execute(http_parser *parser,
                            const char *data,
                            size_t len);
 
+  /* Begin Facebook */
+enum http_parser_options
+{
+  F_HTTP_PARSER_OPTIONS_URL_STRICT           = (1 << 0)
+};
+
+size_t http_parser_execute_options(http_parser *parser,
+                                   const http_parser_settings *settings,
+                                   uint8_t options,
+                                   const char *data,
+                                   size_t len);
+/* End Facebook */
+
 /* Returns a string version of the HTTP method. */
 const char *http_method_str(enum http_method m);
 
@@ -312,6 +332,19 @@ const char *http_errno_description(enum http_errno err);
 int http_parser_parse_url(const char *buf, size_t buflen,
                           int is_connect,
                           struct http_parser_url *u);
+
+/* Begin Facebook */
+enum http_parser_parse_url_options
+{
+  F_PARSE_URL_OPTIONS_URL_STRICT           = (1 << 0)
+};
+
+int http_parser_parse_url_options(
+    const char *buf, size_t buflen,
+    int is_connect,
+    struct http_parser_url *u,
+    uint8_t options);
+/* End Facebook */
 
 /* Pause or un-pause the parser; a nonzero value pauses */
 void http_parser_pause(http_parser *parser, int paused);

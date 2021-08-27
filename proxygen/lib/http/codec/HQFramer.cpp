@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <folly/Random.h>
+
 #include <proxygen/lib/http/HTTPPriorityFunctions.h>
 #include <proxygen/lib/http/codec/CodecUtil.h>
 #include <proxygen/lib/http/codec/HQFramer.h>
@@ -48,24 +50,29 @@ ParseResult parseHeaders(folly::io::Cursor& cursor,
   return folly::none;
 }
 
-ParseResult parseCancelPush(folly::io::Cursor& cursor,
-                            const FrameHeader& header,
-                            PushId& outPushId) noexcept {
+static ParseResult parseIdOnlyFrame(folly::io::Cursor& cursor,
+                                    const FrameHeader& header,
+                                    uint64_t& outId) noexcept {
   DCHECK_LE(header.length, cursor.totalLength());
-  folly::IOBuf buf;
   auto frameLength = header.length;
 
-  auto pushId = quic::decodeQuicInteger(cursor, frameLength);
-  if (!pushId) {
+  auto id = quic::decodeQuicInteger(cursor, frameLength);
+  if (!id) {
     return HTTP3::ErrorCode::HTTP_FRAME_ERROR;
   }
-  outPushId = pushId->first;
-  frameLength -= pushId->second;
+  outId = id->first;
+  frameLength -= id->second;
   if (frameLength != 0) {
     return HTTP3::ErrorCode::HTTP_FRAME_ERROR;
   }
 
   return folly::none;
+}
+
+ParseResult parseCancelPush(folly::io::Cursor& cursor,
+                            const FrameHeader& header,
+                            PushId& outPushId) noexcept {
+  return parseIdOnlyFrame(cursor, header, outPushId);
 }
 
 folly::Expected<folly::Optional<SettingValue>, HTTP3::ErrorCode>
@@ -87,6 +94,7 @@ decodeSettingValue(folly::io::Cursor& cursor,
     case SettingId::HEADER_TABLE_SIZE:
     case SettingId::MAX_HEADER_LIST_SIZE:
     case SettingId::QPACK_BLOCKED_STREAMS:
+    case SettingId::H3_DATAGRAM:
       return value;
   }
   return folly::none;
@@ -142,41 +150,13 @@ ParseResult parsePushPromise(folly::io::Cursor& cursor,
 ParseResult parseGoaway(folly::io::Cursor& cursor,
                         const FrameHeader& header,
                         quic::StreamId& outStreamId) noexcept {
-  DCHECK_LE(header.length, cursor.totalLength());
-  folly::IOBuf buf;
-  auto frameLength = header.length;
-
-  auto streamId = quic::decodeQuicInteger(cursor, frameLength);
-  if (!streamId) {
-    return HTTP3::ErrorCode::HTTP_FRAME_ERROR;
-  }
-  outStreamId = streamId->first;
-  frameLength -= streamId->second;
-  if (frameLength != 0) {
-    return HTTP3::ErrorCode::HTTP_FRAME_ERROR;
-  }
-
-  return folly::none;
+  return parseIdOnlyFrame(cursor, header, outStreamId);
 }
 
 ParseResult parseMaxPushId(folly::io::Cursor& cursor,
                            const FrameHeader& header,
                            quic::StreamId& outPushId) noexcept {
-  DCHECK_LE(header.length, cursor.totalLength());
-  folly::IOBuf buf;
-  auto frameLength = header.length;
-
-  auto pushId = quic::decodeQuicInteger(cursor, frameLength);
-  if (!pushId) {
-    return HTTP3::ErrorCode::HTTP_FRAME_ERROR;
-  }
-  outPushId = pushId->first;
-  frameLength -= pushId->second;
-  if (frameLength != 0) {
-    return HTTP3::ErrorCode::HTTP_FRAME_ERROR;
-  }
-
-  return folly::none;
+  return parseIdOnlyFrame(cursor, header, outPushId);
 }
 
 ParseResult parsePriorityUpdate(folly::io::Cursor& cursor,
@@ -241,14 +221,6 @@ WriteResult writeSimpleFrame(IOBufQueue& queue,
 WriteResult writeData(IOBufQueue& queue,
                       std::unique_ptr<folly::IOBuf> data) noexcept {
   return writeSimpleFrame(queue, FrameType::DATA, std::move(data));
-}
-
-WriteResult writeUnframedBytes(IOBufQueue& queue,
-                               std::unique_ptr<folly::IOBuf> data) noexcept {
-  DCHECK(data);
-  auto payloadSize = data->computeChainDataLength();
-  queue.append(std::move(data));
-  return payloadSize;
 }
 
 WriteResult writeHeaders(IOBufQueue& queue,
@@ -435,6 +407,19 @@ const char* getFrameTypeString(FrameType type) {
 std::ostream& operator<<(std::ostream& os, FrameType type) {
   os << getFrameTypeString(type);
   return os;
+}
+
+WriteResult writeGreaseFrame(folly::IOBufQueue& writeBuf) noexcept {
+  auto greaseId = getGreaseId(folly::Random::rand32(16));
+  if (!greaseId) {
+    return folly::makeUnexpected(quic::TransportErrorCode::INTERNAL_ERROR);
+  }
+  uint64_t uiFrameType = *greaseId;
+  auto frameTypeSize = quic::getQuicIntegerSize(uiFrameType);
+  if (frameTypeSize.hasError()) {
+    return frameTypeSize;
+  }
+  return writeFrameHeader(writeBuf, static_cast<FrameType>(uiFrameType), 0);
 }
 
 }} // namespace proxygen::hq
