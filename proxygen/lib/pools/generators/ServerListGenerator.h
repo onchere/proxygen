@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -18,7 +18,7 @@
 #include <folly/io/async/AsyncTimeout.h>
 #include <glog/logging.h>
 
-#include "proxygen/lib/pools/generators/MemberGroupConfig.h"
+#include <proxygen/lib/pools/generators/MemberGroupConfig.h>
 
 namespace proxygen {
 

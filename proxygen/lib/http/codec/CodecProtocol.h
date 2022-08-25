@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -17,11 +17,10 @@ namespace proxygen {
 
 enum class CodecProtocol : uint8_t {
   HTTP_1_1,
-  SPDY_3,
-  SPDY_3_1,
   HTTP_2,
   HQ,
   HTTP_3,
+  HTTP_BINARY,
 };
 
 /**
@@ -41,11 +40,6 @@ extern bool isValidCodecProtocolStr(const std::string& protocolStr);
 extern CodecProtocol getCodecProtocolFromStr(const std::string& protocolStr);
 
 /**
- * Check if the given protocol is SPDY.
- */
-FB_EXPORT extern bool isSpdyCodecProtocol(CodecProtocol protocol);
-
-/**
  * Check if the given protocol is HTTP2.
  */
 extern bool isHTTP2CodecProtocol(CodecProtocol protocol);
@@ -54,6 +48,11 @@ extern bool isHTTP2CodecProtocol(CodecProtocol protocol);
  * Check if the given protocol is HQ
  */
 extern bool isHQCodecProtocol(CodecProtocol protocol);
+
+/**
+ * Check if the given protocol is HTTP_BINARY
+ */
+extern bool isHTTPBinaryCodecProtocol(CodecProtocol protocol);
 
 /**
  * Check if the given protocol supports paraellel requests

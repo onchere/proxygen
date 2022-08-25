@@ -9,6 +9,8 @@ repo_url = https://github.com/facebook/fboss.git
 
 [build.os=linux]
 builder = cmake
+# fboss files take a lot of RAM to compile.
+job_weight_mib = 3072
 
 [build.not(os=linux)]
 builder = nop
@@ -22,6 +24,7 @@ fmt
 libsodium
 googletest
 zstd
+fatal
 fbthrift
 iproute2
 libmnl
@@ -35,6 +38,8 @@ python
 yaml-cpp
 libyaml
 CLI11
+exprtk
+nlohmann-json
 
 [shipit.pathmap]
 fbcode/fboss/github = .

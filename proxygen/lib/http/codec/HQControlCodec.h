@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -47,6 +47,7 @@ class HQControlCodec
   // HQ Unidirectional Codec API
   std::unique_ptr<folly::IOBuf> onUnidirectionalIngress(
       std::unique_ptr<folly::IOBuf> buf) override {
+    CHECK(buf);
     auto consumed = onFramedIngress(*buf);
     folly::IOBufQueue q;
     q.append(std::move(buf));

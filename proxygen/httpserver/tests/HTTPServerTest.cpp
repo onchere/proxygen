@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -15,6 +15,7 @@
 #include <folly/io/async/AsyncSSLSocket.h>
 #include <folly/io/async/AsyncServerSocket.h>
 #include <folly/io/async/EventBaseManager.h>
+#include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <folly/ssl/OpenSSLCertUtils.h>
 #include <folly/ssl/OpenSSLPtrTypes.h>
@@ -190,6 +191,41 @@ TEST(HttpServerStartStop, TestUseExistingIoExecutor) {
   st->exitThread();
 }
 
+class MockRequestHandlerFactory : public RequestHandlerFactory {
+ public:
+  MOCK_METHOD((void), onServerStart, (folly::EventBase*), (noexcept));
+  MOCK_METHOD((void), onServerStop, (), (noexcept));
+  MOCK_METHOD((RequestHandler*),
+              onRequest,
+              (RequestHandler*, HTTPMessage*),
+              (noexcept));
+};
+
+TEST(HttpServerStartStop, TestZeroThreadsMeansNumCPUs) {
+  // Create a handler factory whose callback will
+  // be called for each worker thread.
+  std::unique_ptr<MockRequestHandlerFactory> handlerFactory =
+      std::make_unique<MockRequestHandlerFactory>();
+  MockRequestHandlerFactory* rawHandlerFactory = handlerFactory.get();
+
+  HTTPServerOptions options;
+  options.threads = 0;
+  options.handlerFactories.push_back(std::move(handlerFactory));
+
+  // threads = 0 should start num of CPUs threads
+  // each calling the handlerFactory onServerStart()
+  EXPECT_CALL(*rawHandlerFactory, onServerStart(testing::_))
+      .Times(std::thread::hardware_concurrency());
+
+  auto server = std::make_unique<HTTPServer>(std::move(options));
+  auto st = std::make_unique<WaitableServerThread>(server.get());
+  EXPECT_TRUE(st->start());
+
+  server->stop();
+  // Let the WaitableServerThread exit
+  st->exitThread();
+}
+
 class AcceptorFactoryForTest : public wangle::AcceptorFactory {
  public:
   std::shared_ptr<wangle::Acceptor> newAcceptor(
@@ -221,10 +257,9 @@ class Cb : public folly::AsyncSocket::ConnectCallback {
     success = true;
     reusedSession = sock_->getSSLSessionReused();
     session = sock_->getSSLSession();
-    if (sock_->getPeerCertificate()) {
+    if (auto cert = sock_->getPeerCertificate()) {
       // keeps this alive until Cb is destroyed, even if sock is closed
-      auto cert = sock_->getPeerCertificate();
-      peerCert_ = cert->getX509();
+      peerCert_ = folly::OpenSSLTransportCertificate::tryExtractX509(cert);
     }
     sock_->close();
   }
@@ -247,16 +282,53 @@ class Cb : public folly::AsyncSocket::ConnectCallback {
   folly::ssl::X509UniquePtr peerCert_{nullptr};
 };
 
-TEST(SSL, SSLTest) {
-  HTTPServer::IPConfig cfg{folly::SocketAddress("127.0.0.1", 0),
-                           HTTPServer::Protocol::HTTP};
+wangle::SSLContextConfig getSslContextConfig(bool useMultiCA) {
   wangle::SSLContextConfig sslCfg;
   sslCfg.isDefault = true;
   sslCfg.setCertificate(
       kTestDir + "certs/test_cert1.pem", kTestDir + "certs/test_key1.pem", "");
-  sslCfg.clientCAFile = kTestDir + "/certs/ca_cert.pem";
+  if (useMultiCA) {
+    sslCfg.clientCAFiles =
+        std::vector<std::string>{kTestDir + "/certs/ca_cert.pem",
+                                 kTestDir + "/certs/client_ca_cert.pem"};
+  } else {
+    sslCfg.clientCAFile = kTestDir + "/certs/ca_cert.pem";
+  }
   sslCfg.clientVerification =
       folly::SSLContext::VerifyClientCertificate::IF_PRESENTED;
+  return sslCfg;
+}
+
+TEST(SSL, SSLTest) {
+  HTTPServer::IPConfig cfg{folly::SocketAddress("127.0.0.1", 0),
+                           HTTPServer::Protocol::HTTP};
+  wangle::SSLContextConfig sslCfg = getSslContextConfig(false);
+  cfg.sslConfigs.push_back(sslCfg);
+
+  HTTPServerOptions options;
+  options.threads = 4;
+
+  auto server = std::make_unique<HTTPServer>(std::move(options));
+
+  std::vector<HTTPServer::IPConfig> ips{cfg};
+  server->bind(ips);
+
+  ServerThread st(server.get());
+  EXPECT_TRUE(st.start());
+
+  folly::EventBase evb;
+  auto ctx = std::make_shared<SSLContext>();
+  folly::AsyncSSLSocket::UniquePtr sock(new folly::AsyncSSLSocket(ctx, &evb));
+  Cb cb(sock.get());
+  sock->connect(&cb, server->addresses().front().address, 1000);
+  evb.loop();
+  EXPECT_TRUE(cb.success);
+}
+
+TEST(SSL, SSLTestWithMultiCAs) {
+  HTTPServer::IPConfig cfg{folly::SocketAddress("127.0.0.1", 0),
+                           HTTPServer::Protocol::HTTP};
+  wangle::SSLContextConfig sslCfg = getSslContextConfig(true);
   cfg.sslConfigs.push_back(sslCfg);
 
   HTTPServerOptions options;
@@ -316,7 +388,7 @@ class TestHandlerFactory : public RequestHandlerFactory {
       auto& transport = txn->getTransport();
       if (auto cert =
               transport.getUnderlyingTransport()->getPeerCertificate()) {
-        auto x509 = cert->getX509();
+        auto x509 = folly::OpenSSLTransportCertificate::tryExtractX509(cert);
         if (x509) {
           certHeader = OpenSSLCertUtils::getCommonName(*x509).value_or("");
         }
@@ -835,7 +907,7 @@ class ConnectionFilterTest : public ScopedServerTest {
           if (!cert) {
             throw std::runtime_error("Client cert is missing");
           }
-          auto x509 = cert->getX509();
+          auto x509 = folly::OpenSSLTransportCertificate::tryExtractX509(cert);
           if (!x509 || OpenSSLCertUtils::getCommonName(*x509).value_or("") !=
                            "testuser1") {
             throw std::runtime_error("Client cert is invalid.");

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -8,7 +8,6 @@
 
 #pragma once
 
-#include "proxygen/lib/http/HTTPMessage.h"
 #include <climits>
 #include <folly/Optional.h>
 #include <folly/SocketAddress.h>
@@ -42,8 +41,17 @@ namespace proxygen {
  *
  * A sender interface to send out DSR delegated packetization requests.
  */
-struct DSRRequestSender {
+class DSRRequestSender {
+ public:
   virtual ~DSRRequestSender() = default;
+
+  // This is called back when the underlying session has generated the header
+  // bytes for the transaction. At this point it is the responsibility of the
+  // DSRRequestSender to call addBufferMeta and sendEOM so that the buffer meta
+  // data can start flowing through the transport. The parameter is the offset
+  // at which the DSR data begins.
+  virtual void onHeaderBytesGenerated(size_t /*dsrDataStartingOffset*/) {
+  }
 };
 
 /**
@@ -240,6 +248,15 @@ class HTTPTransactionHandler : public TraceEventObserver {
   virtual void onError(const HTTPException& error) noexcept = 0;
 
   /**
+   * Can be called at any time before detachTransaction(). This callback is
+   * invoked in cases that violate an internal invariant that is fatal to the
+   * transaction but can be recoverable for the session or library.  One such
+   * example is mis-use of the egress APIs (sendBody() before sendHeaders()).
+   */
+  virtual void onInvariantViolation(const HTTPException& error) noexcept {
+    LOG(FATAL) << error.what();
+  }
+  /**
    * If the remote side's receive buffer fills up, this callback will be
    * invoked so you can attempt to stop sending to the remote side.
    */
@@ -288,7 +305,7 @@ class HTTPTransactionHandler : public TraceEventObserver {
   virtual void onDatagram(std::unique_ptr<folly::IOBuf> /*datagram*/) noexcept {
   }
 
-  virtual ~HTTPTransactionHandler() {
+  virtual ~HTTPTransactionHandler() override {
   }
 };
 
@@ -372,6 +389,9 @@ class HTTPTransactionTransportCallback {
   virtual void lastEgressHeaderByteAcked() noexcept {
   }
 
+  virtual void bodyBytesTx(uint64_t /* bodyOffset */) noexcept {
+  }
+
   virtual void bodyBytesDelivered(uint64_t /* bodyOffset */) noexcept {
   }
 
@@ -379,6 +399,11 @@ class HTTPTransactionTransportCallback {
   }
 
   virtual void transportAppRateLimited() noexcept {
+  }
+
+  virtual void datagramBytesGenerated(size_t /* nbytes */) noexcept {
+  }
+  virtual void datagramBytesReceived(size_t /* size */) noexcept {
   }
 
   virtual ~HTTPTransactionTransportCallback() {
@@ -476,7 +501,7 @@ class HTTPTransaction
                             bool /* eom */) noexcept = 0;
 
     virtual size_t sendBody(HTTPTransaction* txn,
-                            std::unique_ptr<folly::IOBuf>,
+                            std::unique_ptr<folly::IOBuf> iobuf,
                             bool eom,
                             bool trackLastByteFlushed) noexcept = 0;
 
@@ -493,6 +518,10 @@ class HTTPTransaction
 
     virtual size_t sendPriority(HTTPTransaction* txn,
                                 const http2::PriorityUpdate& pri) noexcept = 0;
+    /*
+     * Updates the Local priority for the transaction.
+     * For an upstream transaction it also sends the priority update to the peer
+     */
     virtual size_t changePriority(HTTPTransaction* txn,
                                   HTTPPriority pri) noexcept = 0;
 
@@ -585,7 +614,8 @@ class HTTPTransaction
     /**
      * Ask transport to track and ack body delivery.
      */
-    virtual void trackEgressBodyDelivery(uint64_t /* bodyOffset */) {
+    virtual void trackEgressBodyOffset(uint64_t /* bodyOffset */,
+                                       ByteEvent::EventFlags /*flags*/) {
       LOG(FATAL) << __func__ << " not supported";
       folly::assume_unreachable();
     }
@@ -667,10 +697,11 @@ class HTTPTransaction
   }
 
   std::tuple<uint64_t, uint64_t, double> getPrioritySummary() const {
-    return std::make_tuple(insertDepth_,
-                           currentDepth_,
-                           egressCalls_ > 0 ? cumulativeRatio_ / egressCalls_
-                                            : 0);
+    return std::make_tuple(
+        insertDepth_,
+        currentDepth_,
+        egressCalls_ > 0 ? cumulativeRatio_ / static_cast<double>(egressCalls_)
+                         : 0);
   }
 
   folly::Optional<HTTPPriority> getHTTPPriority() const {
@@ -889,14 +920,20 @@ class HTTPTransaction
   void onLastEgressHeaderByteAcked();
 
   /**
+   * Invoked by the session when egress body has been transmitted to the
+   * peer. Called for each sendBody() call if body bytes tracking is enabled.
+   */
+  void onEgressBodyBytesTx(uint64_t bodyOffset);
+
+  /**
    * Invoked by the session when egress body has been acked by the
    * peer. Called for each sendBody() call if body bytes tracking is enabled.
    */
   void onEgressBodyBytesAcked(uint64_t bodyOffset);
 
   /**
-   * Invoked by the session when egress body delivery has been cancelled by the
-   * peer.
+   * Invoked by the session when egress body tx or delivery has been cancelled
+   * by the peer.
    */
   void onEgressBodyDeliveryCanceled(uint64_t bodyOffset);
 
@@ -932,7 +969,7 @@ class HTTPTransaction
    * Invoked by the handlers that are interested in tracking
    * performance stats.
    */
-  void setTransportCallback(TransportCallback* cb) {
+  virtual void setTransportCallback(TransportCallback* cb) {
     transportCallback_ = cb;
   }
 
@@ -1058,6 +1095,13 @@ class HTTPTransaction
   virtual void sendBody(std::unique_ptr<folly::IOBuf> body);
 
   /**
+   * Returns the cumulative size of body passed to sendBody so far
+   */
+  size_t bodyBytesSent() const {
+    return actualResponseLength_.value_or(0);
+  }
+
+  /**
    * Write any protocol framing required for the subsequent call(s)
    * to sendBody(). This method does not actually write the message out on
    * the wire immediately. All writes happen at the end of the event loop
@@ -1065,8 +1109,10 @@ class HTTPTransaction
    * @param length  Length in bytes of the body data to follow.
    */
   virtual void sendChunkHeader(size_t length) {
-    CHECK(HTTPTransactionEgressSM::transit(
-        egressState_, HTTPTransactionEgressSM::Event::sendChunkHeader));
+    if (!validateEgressStateTransition(
+            HTTPTransactionEgressSM::Event::sendChunkHeader)) {
+      return;
+    }
     CHECK_EQ(deferredBufferMeta_.length, 0)
         << "Chunked-encoding doesn't support BufferMeta write";
     // TODO: move this logic down to session/codec
@@ -1082,8 +1128,8 @@ class HTTPTransaction
    * Frame begun by the last call to sendChunkHeader().
    */
   virtual void sendChunkTerminator() {
-    CHECK(HTTPTransactionEgressSM::transit(
-        egressState_, HTTPTransactionEgressSM::Event::sendChunkTerminator));
+    validateEgressStateTransition(
+        HTTPTransactionEgressSM::Event::sendChunkTerminator);
     CHECK_EQ(deferredBufferMeta_.length, 0)
         << "Chunked-encoding doesn't support BufferMeta write";
   }
@@ -1097,8 +1143,10 @@ class HTTPTransaction
    * @param trailers  Message trailers.
    */
   virtual void sendTrailers(const HTTPHeaders& trailers) {
-    CHECK(HTTPTransactionEgressSM::transit(
-        egressState_, HTTPTransactionEgressSM::Event::sendTrailers));
+    if (!validateEgressStateTransition(
+            HTTPTransactionEgressSM::Event::sendTrailers)) {
+      return;
+    }
     trailers_.reset(new HTTPHeaders(trailers));
   }
 
@@ -1369,7 +1417,9 @@ class HTTPTransaction
    * Schedule or refresh the idle timeout for this transaction
    */
   void refreshTimeout() {
-    if (timer_ && hasIdleTimeout()) {
+    // TODO(T121147568): Remove the zero-check after the experiment is complete.
+    if (timer_ && hasIdleTimeout() &&
+        idleTimeout_.value() != std::chrono::milliseconds::zero()) {
       timer_->scheduleTimeout(this, idleTimeout_.value());
     }
   }
@@ -1513,14 +1563,17 @@ class HTTPTransaction
     enableLastByteFlushedTracking_ = enabled;
   }
 
-  bool setBodyLastByteDeliveryTrackingEnabled(bool enabled) {
-    if (transport_.getSessionType() != Transport::Type::QUIC) {
-      return false;
-    }
-
-    enableBodyLastByteDeliveryTracking_ = enabled;
-    return true;
-  }
+  // Use this API to track TX or Ack for a particular offset of the HTTP body,
+  // if the underlying transport is capable of tracking.
+  // It will generate a callback to HTTPTransactionTransportCallback either
+  // trackedByteEventTx or trackedByteEventAck.  The the event does not happen,
+  // there is no cancellation callback.
+  //
+  // You can call this API before you have egressed the given bodyOffset.
+  // Last byte ack is already tracked implicity and delivered via lastByteAcked.
+  bool trackEgressBodyOffset(
+      uint64_t bodyOffset,
+      ByteEvent::EventFlags flags = ByteEvent::EventFlags::ACK);
 
   uint16_t getDatagramSizeLimit() const noexcept;
   virtual bool sendDatagram(std::unique_ptr<folly::IOBuf> datagram);
@@ -1530,6 +1583,8 @@ class HTTPTransaction
   static void setEgressBufferLimit(uint64_t limit) {
     egressBufferLimit_ = limit;
   }
+
+  virtual bool addBufferMeta() noexcept;
 
  private:
   HTTPTransaction(const HTTPTransaction&) = delete;
@@ -1543,7 +1598,7 @@ class HTTPTransaction
   bool delegatedTransactionChecks(const HTTPMessage& headers) noexcept;
   bool delegatedTransactionChecks() noexcept;
 
-  void addBufferMeta() noexcept;
+  void abortAndDeliverError(ErrorCode codecErorr, const std::string& msg);
 
   void onDelayedDestroy(bool delayed) override;
 
@@ -1628,10 +1683,21 @@ class HTTPTransaction
 
   /**
    * Validates the ingress state transition. Returns false and sends an
-   * abort with PROTOCOL_ERROR if the transition fails. Otherwise it
+   * abort with INTERNAL_ERROR if the transition fails. Otherwise it
    * returns true.
    */
   bool validateIngressStateTransition(HTTPTransactionIngressSM::Event);
+
+  /**
+   * Validates the egress state transition.
+   *
+   * If the transition fails, it will invoke onInvariantViolation, and the
+   * default implementation is to CHECK/crash.  If you have a custom
+   * onInvariantViolation handler, this function can return false.
+   */
+  bool validateEgressStateTransition(HTTPTransactionEgressSM::Event);
+
+  void invariantViolation(HTTPException ex);
 
   /**
    * Flushes any pending window updates.  This can happen from setReceiveWindow
@@ -1781,6 +1847,8 @@ class HTTPTransaction
   folly::Optional<uint64_t> expectedIngressContentLengthRemaining_;
   folly::Optional<uint64_t> expectedResponseLength_;
   folly::Optional<uint64_t> actualResponseLength_{0};
+  uint64_t bodyBytesEgressed_{0};
+  std::map<uint64_t, ByteEvent::EventFlags> egressBodyOffsetsToTrack_;
 
   bool ingressPaused_ : 1;
   bool egressPaused_ : 1;
@@ -1798,7 +1866,6 @@ class HTTPTransaction
   bool priorityFallback_ : 1;
   bool headRequest_ : 1;
   bool enableLastByteFlushedTracking_ : 1;
-  bool enableBodyLastByteDeliveryTracking_ : 1;
 
   // Prevents the application from calling skipBodyTo() before egress
   // headers have been delivered.

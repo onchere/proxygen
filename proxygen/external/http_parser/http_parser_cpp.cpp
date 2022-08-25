@@ -37,6 +37,7 @@ namespace proxygen {
 #endif
 
 #else
+#include <stdbool.h>
 #define nullptr NULL
 
 #endif /* __cplusplus */
@@ -526,7 +527,11 @@ parse_url_char(enum state s, const char ch, int strict_flag)
         return s_dead;
       }
 
+#if __cplusplus
+      [[fallthrough]];
+#else /* __cplusplus */
     /* FALLTHROUGH */
+#endif /* __cplusplus */
     case s_req_server_start:
     case s_req_server:
       if (ch == '/') {
@@ -2244,7 +2249,11 @@ http_parse_host_char(enum http_host_state s, const char ch) {
         return s_http_host;
       }
 
+#if __cplusplus
+      [[fallthrough]];
+#else /* __cplusplus */
     /* FALLTHROUGH */
+#endif /* __cplusplus */
     case s_http_host_v6_end:
       if (ch == ':') {
         return s_http_host_port_start;
@@ -2257,7 +2266,11 @@ http_parse_host_char(enum http_host_state s, const char ch) {
         return s_http_host_v6_end;
       }
 
+#if __cplusplus
+      [[fallthrough]];
+#else /* __cplusplus */
     /* FALLTHROUGH */
+#endif /* __cplusplus */
     case s_http_host_v6_start:
       if (IS_HEX(ch) || ch == ':' || ch == '.') {
         return s_http_host_v6;
@@ -2396,7 +2409,11 @@ http_parser_parse_url_options(const char *buf, size_t buflen, int is_connect,
       case s_req_server_with_at:
         found_at = 1;
 
+#if __cplusplus
+        [[fallthrough]];
+#else /* __cplusplus */
       /* FALLTHROUGH */
+#endif /* __cplusplus */
       case s_req_server:
         uf = UF_HOST;
         break;
@@ -2414,7 +2431,7 @@ http_parser_parse_url_options(const char *buf, size_t buflen, int is_connect,
         break;
 
       default:
-        assert(!"Unexpected state");
+        assert(false && "Unexpected state");
         return 1;
     }
 

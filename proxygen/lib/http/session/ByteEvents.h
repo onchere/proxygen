@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -18,6 +18,8 @@ namespace proxygen {
 class HTTPTransaction;
 class ByteEvent {
  public:
+  enum class EventFlags : uint8_t { ACK = 0x01, TX = 0x02 };
+
   enum EventType {
     FIRST_BYTE,
     LAST_BYTE,
@@ -26,14 +28,17 @@ class ByteEvent {
     TRACKED_BYTE,
     SECOND_TO_LAST_PACKET,
   };
-
+  typedef std::function<void(ByteEvent&)> Callback;
   FOLLY_PUSH_WARNING
   FOLLY_CLANG_DISABLE_WARNING("-Wsigned-enum-bitfield")
-  ByteEvent(uint64_t byteOffset, EventType eventType)
+  ByteEvent(uint64_t byteOffset,
+            EventType eventType,
+            Callback callback = nullptr)
       : eventType_(eventType),
         timestampTx_(false),
         timestampAck_(false),
-        byteOffset_(byteOffset) {
+        byteOffset_(byteOffset),
+        callback_(callback) {
   }
   FOLLY_POP_WARNING
   virtual ~ByteEvent() {
@@ -67,14 +72,30 @@ class ByteEvent {
   bool timestampTx_ : 1;  // packed w/ byteOffset_
   bool timestampAck_ : 1; // packed w/ byteOffset_
   uint64_t byteOffset_ : (8 * sizeof(uint64_t) - 5);
+  Callback callback_{nullptr};
 };
+
+constexpr ByteEvent::EventFlags operator|(const ByteEvent::EventFlags& lhs,
+                                          const ByteEvent::EventFlags& rhs) {
+  return static_cast<ByteEvent::EventFlags>(
+      std::underlying_type<ByteEvent::EventFlags>::type(lhs) |
+      std::underlying_type<ByteEvent::EventFlags>::type(rhs));
+}
+
+constexpr bool operator&(const ByteEvent::EventFlags& lhs,
+                         const ByteEvent::EventFlags& rhs) {
+  return (std::underlying_type<ByteEvent::EventFlags>::type(lhs) &
+          std::underlying_type<ByteEvent::EventFlags>::type(rhs));
+}
 
 std::ostream& operator<<(std::ostream& os, const ByteEvent& txn);
 
 class PingByteEvent : public ByteEvent {
  public:
-  PingByteEvent(uint64_t byteOffset, TimePoint pingRequestReceivedTime)
-      : ByteEvent(byteOffset, PING_REPLY_SENT),
+  PingByteEvent(uint64_t byteOffset,
+                TimePoint pingRequestReceivedTime,
+                ByteEvent::Callback callback)
+      : ByteEvent(byteOffset, PING_REPLY_SENT, callback),
         pingRequestReceivedTime_(pingRequestReceivedTime) {
   }
 

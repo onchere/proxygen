@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -20,9 +20,10 @@ class InsecureVerifierDangerousDoNotUseInProduction
  public:
   ~InsecureVerifierDangerousDoNotUseInProduction() override = default;
 
-  void verify(const std::vector<std::shared_ptr<const fizz::PeerCert>>&)
+  std::shared_ptr<const folly::AsyncTransportCertificate> verify(
+      const std::vector<std::shared_ptr<const fizz::PeerCert>>& certs)
       const override {
-    return;
+    return certs.front();
   }
 
   std::vector<fizz::Extension> getCertificateRequestExtensions()

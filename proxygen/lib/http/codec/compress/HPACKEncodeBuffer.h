@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -31,10 +31,6 @@ class HPACKEncodeBuffer {
    */
   std::unique_ptr<folly::IOBuf> release() {
     return bufQueuePtr_->move();
-  }
-
-  void clear() {
-    bufQueuePtr_->clear();
   }
 
   /**

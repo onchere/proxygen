@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -538,25 +538,29 @@ const std::map<std::string, std::string>& HTTPMessage::getQueryParams() const {
   return queryParams_;
 }
 
-bool HTTPMessage::setQueryString(const std::string& query) {
-  return setQueryStringImpl(query, true);
+bool HTTPMessage::setQueryString(const std::string& query, bool strict) {
+  return setQueryStringImpl(query, true, strict);
 }
 
-bool HTTPMessage::setQueryStringImpl(const std::string& query, bool unparse) {
-  ParseURL u(request().url_);
+bool HTTPMessage::setQueryStringImpl(const std::string& query,
+                                     bool unparse,
+                                     bool strict) {
+  // No need to strictly verify the URL when reparsing it
+  auto u = ParseURL::parseURL(request().url_, /*strict=*/false);
 
-  if (u.valid()) {
+  if (u) {
     // Recreate the URL by just changing the query string
-    setURLImpl(createUrl(u.scheme(),
-                         u.authority(),
-                         u.path(),
-                         query, // new query string
-                         u.fragment()),
-               unparse);
-    return true;
+    auto res = setURLImpl(createUrl(u->scheme(),
+                                    u->authority(),
+                                    u->path(),
+                                    query, // new query string
+                                    u->fragment()),
+                          unparse,
+                          strict);
+    return !strict || res.valid();
   }
 
-  VLOG(4) << "Error parsing URL during setQueryString: " << request().url_;
+  DVLOG(4) << "Error parsing URL during setQueryString: " << request().url_;
   return false;
 }
 
@@ -572,11 +576,12 @@ bool HTTPMessage::removeQueryParam(const std::string& name) {
   }
 
   auto query = createQueryString(queryParams_, request().query_.size());
-  return setQueryStringImpl(query, false);
+  return setQueryStringImpl(query, false, /*strict=*/false);
 }
 
 bool HTTPMessage::setQueryParam(const std::string& name,
-                                const std::string& value) {
+                                const std::string& value,
+                                bool strict) {
   // Parse the query parameters if we haven't done so yet
   if (!parsedQueryParams_) {
     parseQueryParams();
@@ -584,7 +589,7 @@ bool HTTPMessage::setQueryParam(const std::string& name,
 
   queryParams_[name] = value;
   auto query = createQueryString(queryParams_, request().query_.size());
-  return setQueryStringImpl(query, false);
+  return setQueryStringImpl(query, false, strict);
 }
 
 std::string HTTPMessage::createQueryString(
@@ -716,7 +721,7 @@ std::ostream& operator<<(std::ostream& os, const HTTPMessage& msg) {
 }
 
 void HTTPMessage::dumpMessage(int vlogLevel) const {
-  VLOG(vlogLevel) << *this;
+  DVLOG(vlogLevel) << *this;
 }
 
 void HTTPMessage::describe(std::ostream& os) const {
@@ -934,6 +939,16 @@ const char* HTTPMessage::getDefaultReason(uint16_t status) {
       return "Expectation Failed";
     case 418:
       return "I'm a teapot";
+    case 426:
+      return "Upgrade Required";
+    case 428:
+      return "Precondition Required";
+    case 429:
+      return "Too Many Requests";
+    case 431:
+      return "Request Header Fields Too Large";
+    case 451:
+      return "Unavailable For Legal Reasons";
     case 500:
       return "Internal Server Error";
     case 501:
@@ -953,15 +968,15 @@ const char* HTTPMessage::getDefaultReason(uint16_t status) {
   return "-";
 }
 
-ParseURL HTTPMessage::setURLImplInternal(bool unparse) {
+ParseURL HTTPMessage::setURLImplInternal(bool unparse, bool strict) {
   auto& req = request();
-  ParseURL u(req.url_);
+  auto u = ParseURL::parseURLMaybeInvalid(req.url_, strict);
   if (u.valid()) {
-    VLOG(9) << "set path: " << u.path() << " query:" << u.query();
+    DVLOG(9) << "set path: " << u.path() << " query:" << u.query();
     req.path_ = u.path();
     req.query_ = u.query();
   } else {
-    VLOG(4) << "Error in parsing URL: " << req.url_;
+    DVLOG(4) << "Error in parsing URL: " << req.url_;
     req.path_.clear();
     req.query_.clear();
   }

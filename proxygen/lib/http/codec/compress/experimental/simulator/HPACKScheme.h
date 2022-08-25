@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -8,10 +8,10 @@
 
 #pragma once
 
-#include "proxygen/lib/http/codec/compress/experimental/simulator/CompressionScheme.h"
 #include <proxygen/lib/http/codec/compress/HPACKCodec.h>
-#include <proxygen/lib/http/codec/compress/HPACKQueue.h>
 #include <proxygen/lib/http/codec/compress/NoPathIndexingStrategy.h>
+#include <proxygen/lib/http/codec/compress/experimental/simulator/CompressionScheme.h>
+#include <proxygen/lib/http/codec/compress/experimental/simulator/HPACKQueue.h>
 
 namespace proxygen { namespace compress {
 

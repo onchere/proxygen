@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -8,10 +8,10 @@
 
 #pragma once
 
-#include "StructuredHeadersConstants.h"
 #include <boost/iostreams/device/back_inserter.hpp>
 #include <boost/iostreams/stream_buffer.hpp>
 #include <ostream>
+#include <proxygen/lib/http/structuredheaders/StructuredHeadersConstants.h>
 #include <string>
 #include <unordered_map>
 #include <vector>

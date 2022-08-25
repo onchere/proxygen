@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -108,7 +108,7 @@ void CurlClient::initializeSsl(const string& caPath,
                                const string& keyPath) {
   sslContext_ = std::make_shared<folly::SSLContext>();
   sslContext_->setOptions(SSL_OP_NO_COMPRESSION);
-  sslContext_->setCipherList(folly::ssl::SSLCommonOptions::ciphers());
+  folly::ssl::setCipherSuites<folly::ssl::SSLCommonOptions>(*sslContext_);
   if (!caPath.empty()) {
     sslContext_->loadTrustedCertificates(caPath.c_str());
   }
@@ -184,8 +184,11 @@ void CurlClient::setupHeaders() {
 }
 
 void CurlClient::sendRequest(HTTPTransaction* txn) {
+  LOG_IF(INFO, loggingEnabled_)
+      << fmt::format("Sending request for {}", url_.getUrl());
   txn_ = txn;
   setupHeaders();
+  txnStartTime_ = std::chrono::steady_clock::now();
   txn_->sendHeaders(request_);
 
   if (httpMethod_ == HTTPMethod::POST) {
@@ -267,7 +270,12 @@ void CurlClient::onTrailers(std::unique_ptr<HTTPHeaders>) noexcept {
 }
 
 void CurlClient::onEOM() noexcept {
-  LOG_IF(INFO, loggingEnabled_) << "Got EOM";
+  LOG_IF(INFO, loggingEnabled_)
+      << fmt::format("Got EOM for {}. Txn Time= {} ms",
+                     url_.getUrl(),
+                     std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - txnStartTime_)
+                         .count());
   if (eomFunc_) {
     eomFunc_.value()();
   }

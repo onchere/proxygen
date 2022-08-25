@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -76,7 +76,7 @@ class CurlClient
              unsigned short httpMajor = 1,
              unsigned short httpMinor = 1);
 
-  virtual ~CurlClient() = default;
+  virtual ~CurlClient() override = default;
 
   bool saveResponseToFile(const std::string& outputFilename);
 
@@ -165,6 +165,7 @@ class CurlClient
 
   std::unique_ptr<proxygen::HTTPMessage> response_;
   std::vector<std::unique_ptr<CurlPushHandler>> pushTxnHandlers_;
+  std::chrono::time_point<std::chrono::steady_clock> txnStartTime_;
 
   folly::Optional<std::function<void()>> eomFunc_;
 

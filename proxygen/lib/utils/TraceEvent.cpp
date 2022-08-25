@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -72,7 +72,7 @@ bool TraceEvent::addMetaInternal(TraceFieldType key, MetaData&& value) {
 
   // replace if key already exist
   if (!rc.second) {
-    rc.first->second = value;
+    rc.first->second = std::move(value);
   }
 
   return rc.second;

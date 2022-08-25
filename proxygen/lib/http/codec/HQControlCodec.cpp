@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -59,8 +59,10 @@ ParseResult HQControlCodec::checkFrameAllowed(FrameType type) {
 
     // PRIORITY_UPDATE is downstream control codec only
     if (transportDirection_ == TransportDirection::UPSTREAM &&
-        (type == hq::FrameType::PUSH_PRIORITY_UPDATE ||
-         type == hq::FrameType::PRIORITY_UPDATE)) {
+        (type == hq::FrameType::PRIORITY_UPDATE ||
+         type == hq::FrameType::PUSH_PRIORITY_UPDATE ||
+         type == hq::FrameType::FB_PUSH_PRIORITY_UPDATE ||
+         type == hq::FrameType::FB_PRIORITY_UPDATE)) {
       return HTTP3::ErrorCode::HTTP_FRAME_UNEXPECTED;
     }
   }

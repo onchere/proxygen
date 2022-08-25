@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -12,52 +12,10 @@
 #include <proxygen/lib/http/codec/HTTP1xCodec.h>
 #include <proxygen/lib/http/codec/HTTP2Codec.h>
 #include <proxygen/lib/http/codec/HTTP2Constants.h>
-#include <proxygen/lib/http/codec/SPDYCodec.h>
+#include <proxygen/lib/http/codec/test/TestUtils.h>
 #include <proxygen/lib/services/AcceptorConfiguration.h>
 
 using namespace proxygen;
-
-TEST(HTTPDefaultSessionCodecFactoryTest, GetCodecSPDY) {
-  AcceptorConfiguration conf;
-  // If set directly on the acceptor, we should always return the SPDY version.
-  conf.plaintextProtocol = "spdy/3.1";
-
-  HTTPDefaultSessionCodecFactory factory(conf);
-  auto codec = factory.getCodec(
-      "http/1.1", TransportDirection::UPSTREAM, false /* isTLS */);
-  SPDYCodec* spdyCodec = dynamic_cast<SPDYCodec*>(codec.get());
-  EXPECT_NE(spdyCodec, nullptr);
-  EXPECT_EQ(spdyCodec->getProtocol(), CodecProtocol::SPDY_3_1);
-
-  codec = factory.getCodec(
-      "spdy/3", TransportDirection::UPSTREAM, false /* isTLS */);
-  spdyCodec = dynamic_cast<SPDYCodec*>(codec.get());
-  EXPECT_NE(spdyCodec, nullptr);
-  EXPECT_EQ(spdyCodec->getProtocol(), CodecProtocol::SPDY_3_1);
-
-  conf.plaintextProtocol = "spdy/3";
-
-  HTTPDefaultSessionCodecFactory secondFactory(conf);
-  codec = secondFactory.getCodec(
-      "http/1.1", TransportDirection::UPSTREAM, false /* isTLS */);
-  spdyCodec = dynamic_cast<SPDYCodec*>(codec.get());
-  EXPECT_NE(spdyCodec, nullptr);
-  EXPECT_EQ(spdyCodec->getProtocol(), CodecProtocol::SPDY_3);
-
-  codec = secondFactory.getCodec(
-      "spdy/3.1", TransportDirection::UPSTREAM, false /* isTLS */);
-  spdyCodec = dynamic_cast<SPDYCodec*>(codec.get());
-  EXPECT_NE(spdyCodec, nullptr);
-  EXPECT_EQ(spdyCodec->getProtocol(), CodecProtocol::SPDY_3);
-
-  // On a somewhat contrived example, if TLS we should return the version
-  // negotiated through ALPN.
-  codec = secondFactory.getCodec(
-      "h2", TransportDirection::DOWNSTREAM, true /* isTLS */);
-  HTTP2Codec* httpCodec = dynamic_cast<HTTP2Codec*>(codec.get());
-  EXPECT_NE(httpCodec, nullptr);
-  EXPECT_EQ(httpCodec->getProtocol(), CodecProtocol::HTTP_2);
-}
 
 TEST(HTTPDefaultSessionCodecFactoryTest, GetCodecH2) {
   AcceptorConfiguration conf;
@@ -111,12 +69,6 @@ TEST(HTTPDefaultSessionCodecFactoryTest, GetCodec) {
   EXPECT_NE(http1Codec, nullptr);
   EXPECT_EQ(http1Codec->getProtocol(), CodecProtocol::HTTP_1_1);
 
-  codec = factory.getCodec(
-      "spdy/3.1", TransportDirection::UPSTREAM, false /* isTLS */);
-  SPDYCodec* spdyCodec = dynamic_cast<SPDYCodec*>(codec.get());
-  EXPECT_NE(spdyCodec, nullptr);
-  EXPECT_EQ(spdyCodec->getProtocol(), CodecProtocol::SPDY_3_1);
-
   codec =
       factory.getCodec("h2", TransportDirection::DOWNSTREAM, false /* isTLS */);
   HTTP2Codec* httpCodec = dynamic_cast<HTTP2Codec*>(codec.get());
@@ -128,3 +80,55 @@ TEST(HTTPDefaultSessionCodecFactoryTest, GetCodec) {
       "not/supported", TransportDirection::DOWNSTREAM, false /* isTLS */);
   EXPECT_EQ(codec, nullptr);
 }
+
+struct TestParams {
+  bool strict;
+  std::string plaintextProto;
+};
+
+class HTTPDefaultSessionCodecFactoryValidationTest
+    : public ::testing::TestWithParam<TestParams> {};
+
+TEST_P(HTTPDefaultSessionCodecFactoryValidationTest, StrictValidation) {
+  AcceptorConfiguration conf;
+  conf.plaintextProtocol = GetParam().plaintextProto;
+  HTTPDefaultSessionCodecFactory factory(conf);
+  bool strict = GetParam().strict;
+  factory.setStrictValidationFn([strict] { return strict; });
+
+  auto codec = factory.getCodec(
+      http2::kProtocolString, TransportDirection::DOWNSTREAM, false);
+  HTTP2Codec upstream(TransportDirection::UPSTREAM);
+  HTTPMessage req;
+  folly::IOBufQueue output{folly::IOBufQueue::cacheChainLength()};
+  req.setURL("/foo\xff");
+  upstream.generateConnectionPreface(output);
+  upstream.generateSettings(output);
+  upstream.generateHeader(output, upstream.createStream(), req, true, nullptr);
+  FakeHTTPCodecCallback callbacks;
+  codec->setCallback(&callbacks);
+  codec->onIngress(*output.front());
+  EXPECT_EQ(callbacks.messageBegin, 1);
+  EXPECT_EQ(callbacks.headersComplete, strict ? 0 : 1);
+  EXPECT_EQ(callbacks.streamErrors, strict ? 1 : 0);
+  output.reset();
+
+  if (conf.plaintextProtocol.empty()) {
+    callbacks.reset();
+    codec = factory.getCodec("http/1.1", TransportDirection::DOWNSTREAM, true);
+    codec->setCallback(&callbacks);
+    codec->onIngress(
+        *folly::IOBuf::copyBuffer("GET /foo\xff HTTP/1.1\r\n\r\n"));
+    EXPECT_EQ(callbacks.messageBegin, 1);
+    EXPECT_EQ(callbacks.headersComplete, strict ? 0 : 1);
+    EXPECT_EQ(callbacks.streamErrors, strict ? 1 : 0);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    HTTPDefaultSessionCodecFactoryTest,
+    HTTPDefaultSessionCodecFactoryValidationTest,
+    ::testing::Values(TestParams({true, std::string()}),
+                      TestParams({true, std::string("h2c")}),
+                      TestParams({false, std::string("")}),
+                      TestParams({false, std::string("h2c")})));

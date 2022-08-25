@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -40,6 +40,8 @@ ParseResult HQFramedCodec::parseFrame(Cursor& cursor) {
       return parseMaxPushId(cursor, curHeader_);
     case hq::FrameType::PRIORITY_UPDATE:
     case hq::FrameType::PUSH_PRIORITY_UPDATE:
+    case hq::FrameType::FB_PRIORITY_UPDATE:
+    case hq::FrameType::FB_PUSH_PRIORITY_UPDATE:
       return parsePriorityUpdate(cursor, curHeader_);
     default:
       // Implementations MUST ignore and discard any frame that has a

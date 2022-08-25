@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -48,6 +48,7 @@ namespace proxygen {
     x(WriteTimeout),                            \
     x(AddressPrivate),                          \
     x(AddressFamilyNotSupported),               \
+    x(DNSResolutionErr),                        \
     x(DNSNoResults),                            \
     x(MalformedInput),                          \
     x(UnsupportedExpectation),                  \
@@ -86,8 +87,8 @@ namespace proxygen {
     x(Max)
 // clang-format on
 
-// Increase this if you add more error types and Max exceeds 63
-#define PROXYGEN_ERROR_BITSIZE 6
+// Increase this if you add more error types and Max exceeds 127
+#define PROXYGEN_ERROR_BITSIZE 7
 
 #define PROXYGEN_ERROR_ENUM(error) kError##error
 

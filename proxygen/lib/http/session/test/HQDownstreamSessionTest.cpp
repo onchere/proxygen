@@ -1,12 +1,12 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-#include "folly/Expected.h"
+#include <folly/Expected.h>
 #include <proxygen/lib/http/session/HQDownstreamSession.h>
 
 #include <folly/io/async/EventBaseManager.h>
@@ -151,7 +151,7 @@ HQDownstreamSessionTest::addSimpleStrictHandlerBase() {
       .WillOnce(testing::Return(rawHandler))
       .RetiresOnSaturation();
 
-  EXPECT_CALL(*handler, setTransaction(testing::_))
+  EXPECT_CALL(*handler, _setTransaction(testing::_))
       .WillOnce(testing::SaveArg<0>(&handler->txn_));
 
   return handler;
@@ -279,7 +279,7 @@ void HQDownstreamSessionTest::expectTransactionTimeout(
   EXPECT_CALL(getMockController(),
               getTransactionTimeoutHandler(testing::_, testing::_))
       .WillOnce(testing::Return(&handler));
-  EXPECT_CALL(handler, setTransaction(testing::_))
+  EXPECT_CALL(handler, _setTransaction(testing::_))
       .WillOnce(testing::SaveArg<0>(&handler.txn_));
   handler.expectError(
       [&handler, &fn](const proxygen::HTTPException& ex) mutable {
@@ -357,6 +357,68 @@ TEST_P(HQDownstreamSessionTest, ReplyResponsePriority) {
   hqSession_->closeWhenIdle();
 }
 
+TEST_P(HQDownstreamSessionTest, SetLocalPriorityOnHeadersComplete) {
+  uint8_t urgency = 5;
+  bool incremental = false;
+  if (!IS_HQ) { // H1Q tests do not support priority
+    hqSession_->closeWhenIdle();
+    return;
+  }
+  auto request = getProgressiveGetRequest();
+  sendRequest(request);
+  auto handler = addSimpleStrictHandler();
+  // Check that the priority is set from the request headers
+  EXPECT_CALL(*socketDriver_->getSocket(), setStreamPriority(_, 1, true))
+      .Times(1);
+  // Check that the priority is set from the local update
+  EXPECT_CALL(*socketDriver_->getSocket(),
+              setStreamPriority(_, urgency, incremental))
+      .Times(1);
+  handler->expectHeaders(
+      [&]() { handler->txn_->updateAndSendPriority(urgency, incremental); });
+  handler->expectEOM([&]() {
+    auto resp = makeResponse(200, 0);
+    EXPECT_CALL(*socketDriver_->getSocket(), getStreamPriority(_))
+        .Times(1)
+        .WillOnce(Return(quic::Priority(urgency, incremental)));
+    handler->sendRequest(*std::get<0>(resp));
+  });
+  handler->expectDetachTransaction();
+  flushRequestsAndLoop();
+  hqSession_->closeWhenIdle();
+}
+
+TEST_P(HQDownstreamSessionTest, SetLocalPriorityAfterClientEOM) {
+  uint8_t urgency = 5;
+  bool incremental = false;
+  if (!IS_HQ) { // H1Q tests do not support priority
+    hqSession_->closeWhenIdle();
+    return;
+  }
+  auto request = getProgressiveGetRequest();
+  sendRequest(request);
+  auto handler = addSimpleStrictHandler();
+  // Check that the priority is set from the request headers
+  EXPECT_CALL(*socketDriver_->getSocket(), setStreamPriority(_, 1, true))
+      .Times(1);
+  // Check that the priority is set from the local update
+  EXPECT_CALL(*socketDriver_->getSocket(),
+              setStreamPriority(_, urgency, incremental))
+      .Times(1);
+  handler->expectHeaders();
+  handler->expectEOM([&]() {
+    handler->txn_->updateAndSendPriority(urgency, incremental);
+    auto resp = makeResponse(200, 0);
+    EXPECT_CALL(*socketDriver_->getSocket(), getStreamPriority(_))
+        .Times(1)
+        .WillOnce(Return(quic::Priority(urgency, incremental)));
+    handler->sendRequest(*std::get<0>(resp));
+  });
+  handler->expectDetachTransaction();
+  flushRequestsAndLoop();
+  hqSession_->closeWhenIdle();
+}
+
 TEST_P(HQDownstreamSessionTestHQPush, PushPriority) {
   sendRequest("/", 1);
   HTTPMessage promiseReq, parentResp;
@@ -402,9 +464,9 @@ TEST_P(HQDownstreamSessionTestHQPush, PushPriority) {
     pushTxn->sendBody(makeBuf(200));
     pushTxn->sendEOM();
   });
-  EXPECT_CALL(pushHandler, setTransaction(_))
+  EXPECT_CALL(pushHandler, _setTransaction(_))
       .WillOnce(Invoke([&](HTTPTransaction* txn) { pushHandler.txn_ = txn; }));
-  EXPECT_CALL(pushHandler, detachTransaction());
+  EXPECT_CALL(pushHandler, _detachTransaction());
 
   flushRequestsAndLoopN(1);
   handler->txn_->sendEOM();
@@ -418,18 +480,26 @@ TEST_P(HQDownstreamSessionTest, OnPriorityCallback) {
     hqSession_->closeWhenIdle();
     return;
   }
-  auto id = sendRequest(getGetRequest());
+  // Simulate priority arriving too early, connection still valid
+  // this is going to be stored and applied when receiving headers
+  hqSession_->onPriority(0, HTTPPriority(3, false));
+  EXPECT_CALL(*socketDriver_->getSocket(), setStreamPriority(0, 3, false));
+  auto id = sendRequest(getProgressiveGetRequest());
+  CHECK_EQ(id, 0);
   auto handler = addSimpleStrictHandler();
   handler->expectHeaders([&]() {
     handler->sendHeaders(200, 1000);
-    EXPECT_CALL(*socketDriver_->getSocket(), setStreamPriority(id, 4, true));
-    hqSession_->onPriority(id, HTTPPriority(4, true));
+    // Priority update on the stream
+    EXPECT_CALL(*socketDriver_->getSocket(), setStreamPriority(0, 2, true));
+    hqSession_->onPriority(id, HTTPPriority(2, true));
     handler->sendBody(1000);
     handler->sendEOM();
   });
   handler->expectEOM();
   handler->expectDetachTransaction();
   flushRequestsAndLoop();
+  // Priority on a stream we can't find - no-op
+  hqSession_->onPriority(id, HTTPPriority(4, true));
   hqSession_->closeWhenIdle();
 }
 
@@ -473,7 +543,7 @@ TEST_P(HQDownstreamSessionTest, HttpRateLimitNormal) {
     handler1->sendHeaders(200, rspLengthBytes);
     handler1->sendBody(rspLengthBytes);
   });
-  EXPECT_CALL(*handler1, onEgressPaused()).Times(AtLeast(1));
+  EXPECT_CALL(*handler1, _onEgressPaused()).Times(AtLeast(1));
   handler1->expectEgressResumed([&handler1] { handler1->txn_->sendEOM(); });
   handler1->expectDetachTransaction();
   flushRequestsAndLoop();
@@ -675,7 +745,7 @@ TEST_P(HQDownstreamSessionTest, OnFlowControlUpdateOnUnknownStream) {
   handler->expectDetachTransaction();
 
   // Call flowControlUpdate on a stream the Application doesn't know
-  socketDriver_->sock_->cb_->onFlowControlUpdate(id + 4);
+  socketDriver_->sock_->connCb_->onFlowControlUpdate(id + 4);
   flushRequestsAndLoop();
   hqSession_->closeWhenIdle();
 }
@@ -829,7 +899,7 @@ std::tuple<size_t, size_t, size_t> estimateResponseSize(bool isHq,
     }
     codec->generateBody(estimateSizeBuf,
                         txn,
-                        folly::IOBuf::copyBuffer(folly::range(buf)),
+                        folly::IOBuf::copyBuffer(buf),
                         HTTPCodec::NoPadding,
                         false);
     if (chunking) {
@@ -1222,7 +1292,7 @@ TEST_P(HQDownstreamSessionTest, TransportErrorWithOpenStream) {
     eventBase_.runInLoop([this] {
       // This should error out the stream first, then destroy the session
       socketDriver_->deliverConnectionError(
-          std::make_pair(quic::TransportErrorCode::PROTOCOL_VIOLATION, ""));
+          quic::QuicError(quic::TransportErrorCode::PROTOCOL_VIOLATION, ""));
     });
   });
   handler->expectError([](const HTTPException& ex) {
@@ -1295,7 +1365,7 @@ TEST_P(HQDownstreamSessionTest, WriteErrorFlowControl) {
 // Connection error on idle connection
 TEST_P(HQDownstreamSessionTest, ConnectionErrorIdle) {
   socketDriver_->deliverConnectionError(
-      std::make_pair(quic::TransportErrorCode::PROTOCOL_VIOLATION, ""));
+      quic::QuicError(quic::TransportErrorCode::PROTOCOL_VIOLATION, ""));
   eventBase_.loopOnce();
 }
 
@@ -1316,7 +1386,7 @@ TEST_P(HQDownstreamSessionTestH1q, BadHttp) {
   testing::StrictMock<MockHTTPHandler> handler;
   EXPECT_CALL(getMockController(), getParseErrorHandler(_, _, _))
       .WillOnce(Return(&handler));
-  EXPECT_CALL(handler, setTransaction(testing::_))
+  EXPECT_CALL(handler, _setTransaction(testing::_))
       .WillOnce(testing::SaveArg<0>(&handler.txn_));
   handler.expectError([&handler](const HTTPException& ex) {
     EXPECT_TRUE(ex.hasHttpStatusCode());
@@ -1339,7 +1409,7 @@ TEST_P(HQDownstreamSessionTestH1q, BadHttpHeaders) {
   testing::StrictMock<MockHTTPHandler> handler;
   EXPECT_CALL(getMockController(), getParseErrorHandler(_, _, _))
       .WillOnce(Return(&handler));
-  EXPECT_CALL(handler, setTransaction(testing::_))
+  EXPECT_CALL(handler, _setTransaction(testing::_))
       .WillOnce(testing::SaveArg<0>(&handler.txn_));
   handler.expectError([&handler](const HTTPException& ex) {
     EXPECT_TRUE(ex.hasHttpStatusCode());
@@ -1368,6 +1438,44 @@ TEST_P(HQDownstreamSessionTestHQ, BadHttpHeaders) {
   */
   flushRequestsAndLoop();
   // The QPACK error will cause the connection to get dropped
+}
+
+TEST_P(HQDownstreamSessionTest, BadHttpStrict) {
+  hqSession_->setStrictValidation(true);
+  sendRequest(getGetRequest("/foo\xff"));
+  testing::StrictMock<MockHTTPHandler> handler;
+  EXPECT_CALL(getMockController(), getParseErrorHandler(_, _, _))
+      .WillOnce(Return(&handler));
+  EXPECT_CALL(handler, _setTransaction(testing::_))
+      .WillOnce(testing::SaveArg<0>(&handler.txn_));
+  handler.expectError([&handler](const HTTPException& ex) {
+    EXPECT_TRUE(ex.hasHttpStatusCode());
+    handler.sendReplyWithBody(ex.getHttpStatusCode(), 100);
+  });
+  handler.expectDetachTransaction();
+
+  flushRequestsAndLoop();
+  hqSession_->closeWhenIdle();
+}
+
+TEST_P(HQDownstreamSessionTest, BadHttpHeadersStrict) {
+  hqSession_->setStrictValidation(true);
+  auto req = getGetRequest("/foo");
+  req.getHeaders().set("Foo", "bad value\xff");
+  sendRequest(req);
+  testing::StrictMock<MockHTTPHandler> handler;
+  EXPECT_CALL(getMockController(), getParseErrorHandler(_, _, _))
+      .WillOnce(Return(&handler));
+  EXPECT_CALL(handler, _setTransaction(testing::_))
+      .WillOnce(testing::SaveArg<0>(&handler.txn_));
+  handler.expectError([&handler](const HTTPException& ex) {
+    EXPECT_TRUE(ex.hasHttpStatusCode());
+    handler.sendReplyWithBody(ex.getHttpStatusCode(), 100);
+  });
+  handler.expectDetachTransaction();
+
+  flushRequestsAndLoop();
+  hqSession_->closeWhenIdle();
 }
 
 // NOTE: this behavior is only valid for basic h1q
@@ -1461,7 +1569,7 @@ TEST_P(HQDownstreamSessionTest, PauseResume) {
   hqSession_->closeWhenIdle();
 
   // After resume, body (2 calls) and EOM delivered
-  EXPECT_CALL(*handler, onBodyWithOffset(_, _)).Times(2);
+  EXPECT_CALL(*handler, _onBodyWithOffset(_, _)).Times(2);
   handler->expectEOM([&handler] { handler->sendReplyWithBody(200, 100); });
   handler->expectDetachTransaction();
   handler2->expectHeaders(
@@ -1534,7 +1642,7 @@ TEST_P(HQDownstreamSessionTestH1q, ManagedTimeoutReadReset) {
       250);
   handler->expectEOM([&handler] { handler->sendReplyWithBody(200, 100); });
   handler->expectHeaders();
-  EXPECT_CALL(*handler, onBodyWithOffset(testing::_, testing::_)).Times(3);
+  EXPECT_CALL(*handler, _onBodyWithOffset(testing::_, testing::_)).Times(3);
   handler->expectDetachTransaction();
   flushRequestsAndLoop();
 }
@@ -1932,8 +2040,32 @@ TEST_P(HQDownstreamSessionTest, LocalErrQueuedEgress) {
   });
   handler->expectDetachTransaction();
   socketDriver_->deliverConnectionError(
-      std::make_pair(quic::LocalErrorCode::CONNECTION_RESET, ""));
+      quic::QuicError(quic::LocalErrorCode::CONNECTION_RESET, ""));
   flushRequestsAndLoop();
+}
+
+TEST_P(HQDownstreamSessionTest, NoErrorNoStreams) {
+  EXPECT_CALL(infoCb_, onIngressError(_, kErrorNone));
+  socketDriver_->deliverConnectionError(
+      quic::QuicError(HTTP3::ErrorCode::HTTP_NO_ERROR, ""));
+  flushRequestsAndLoop();
+}
+
+TEST_P(HQDownstreamSessionTest, NoErrorOneStreams) {
+  sendRequest();
+  auto handler = addSimpleStrictHandler();
+  handler->expectHeaders();
+  handler->expectEOM();
+  flushRequestsAndLoopN(1);
+  // stream gets an error
+  handler->expectError([](const HTTPException& ex) {
+    EXPECT_EQ(ex.getProxygenError(), kErrorEOF);
+  });
+  handler->expectDetachTransaction();
+  // This is for connection level errors, maybe should be reported a
+  EXPECT_CALL(infoCb_, onIngressError(_, kErrorEOF));
+  socketDriver_->deliverConnectionError(
+      quic::QuicError(HTTP3::ErrorCode::HTTP_NO_ERROR, ""));
 }
 
 TEST_P(HQDownstreamSessionTestHQ, Connect) {
@@ -1943,7 +2075,7 @@ TEST_P(HQDownstreamSessionTestHQ, Connect) {
   handler->expectEOM([&] { handler->terminate(); });
 
   // Data should be received using onBody
-  EXPECT_CALL(*handler, onBodyWithOffset(_, _))
+  EXPECT_CALL(*handler, _onBodyWithOffset(_, _))
       .WillOnce(ExpectString("12345"))
       .WillOnce(ExpectString("abcdefg"));
   handler->expectDetachTransaction();
@@ -1977,7 +2109,7 @@ TEST_P(HQDownstreamSessionTestHQ, ConnectUDP) {
   handler->expectEOM([&] { handler->terminate(); });
 
   // Data should be received using onBody
-  EXPECT_CALL(*handler, onBodyWithOffset(_, _))
+  EXPECT_CALL(*handler, _onBodyWithOffset(_, _))
       .WillOnce(ExpectString("12345"))
       .WillOnce(ExpectString("abcdefg"));
   handler->expectDetachTransaction();
@@ -2249,6 +2381,52 @@ TEST_P(HQDownstreamSessionTestHQ, DelayedQPACKStopSendingReset) {
   hqSession_->closeWhenIdle();
 }
 
+using ControlStreamsStallTest = HQDownstreamSessionBeforeTransportReadyTest;
+
+TEST_P(ControlStreamsStallTest, StalledQpackStream) {
+  // This test does not pre-setup any control streams for a reason.
+  // We want to be able to control unidirectional (QPACK) stream lifetime to
+  // perform the test.
+
+  QuicConnectionStateBase state(quic::QuicNodeType::Server);
+  EXPECT_CALL(*(socketDriver_->sock_), getState())
+      .WillRepeatedly(testing::Invoke(
+          [&state]() -> QuicConnectionStateBase* { return &state; }));
+
+  // Get a request going.
+  auto req = getGetRequest();
+  req.getHeaders().add("X-FB-Debug", "rfccffgvtvnenjkbtitkfdufddnvbecu");
+  auto id = sendRequest(req);
+
+  // Add data to the control stream 6 with fake stream offset 42.
+  // This is to ensure unidirectional stream dispatcher in session does not
+  // instantiate an actual full blown control stream object, but only create a
+  // pending tmp stream placeholder and attach a peek callback to it to wait for
+  // the preface.
+  std::array<uint8_t, 1> data1{0b00100111};
+  auto buf1 = folly::IOBuf::copyBuffer(data1.data(), data1.size());
+  socketDriver_->addReadEvent(6, std::move(buf1), milliseconds(0), 42);
+
+  // Let the sesion roll.
+  hqSession_->onTransportReady();
+
+  // Now cancel the request we queded up in the beginning.
+  socketDriver_->addStopSending(id, HTTP3::ErrorCode::HTTP_REQUEST_CANCELLED);
+  socketDriver_->addReadError(id,
+                              HTTP3::ErrorCode::HTTP_REQUEST_CANCELLED,
+                              std::chrono::milliseconds(0));
+
+  // Roll the event base. Once session loops, the expectation is that the
+  // pending control stream is alive and well and has its peek callback
+  // attached.
+  flushRequestsAndLoopN(1);
+
+  EXPECT_NE(socketDriver_->streams_[6].peekCB, nullptr);
+
+  // Close the session; all good.
+  hqSession_->closeWhenIdle();
+}
+
 TEST_P(HQDownstreamSessionTestHQ, QPACKHeadersTooLarge) {
   hqSession_->setEgressSettings({{SettingsId::MAX_HEADER_LIST_SIZE, 60}});
   auto req = getGetRequest();
@@ -2257,7 +2435,7 @@ TEST_P(HQDownstreamSessionTestHQ, QPACKHeadersTooLarge) {
   testing::StrictMock<MockHTTPHandler> errHandler;
   EXPECT_CALL(getMockController(), getParseErrorHandler(_, _, _))
       .WillOnce(Return(&errHandler));
-  EXPECT_CALL(errHandler, setTransaction(testing::_))
+  EXPECT_CALL(errHandler, _setTransaction(testing::_))
       .WillOnce(testing::SaveArg<0>(&errHandler.txn_));
   errHandler.expectError([&errHandler](const HTTPException& ex) {
     EXPECT_EQ(ex.getHttp3ErrorCode(),
@@ -2325,7 +2503,7 @@ TEST_P(HQDownstreamSessionTest, ProcessReadDataOnDetachedStream) {
           stream.readCB->readAvailable(id);
           // now send an error so that the stream gets marked for detach
           stream.readCB->readError(
-              id, std::make_pair(HTTP3::ErrorCode::HTTP_NO_ERROR, folly::none));
+              id, quic::QuicError(HTTP3::ErrorCode::HTTP_NO_ERROR));
           // then closeWhenIdle (like during shutdown), this calls
           // checkForShutdown that calls checkForDetach and may detach a
           // transaction that was added to the pendingProcessReadSet in the same
@@ -2344,15 +2522,15 @@ TEST_P(HQDownstreamSessionTest, ProcessReadDataOnDetachedStream) {
 
 // Test Cases for which Settings are not sent in the test SetUp
 using HQDownstreamSessionTestHQNoSettings = HQDownstreamSessionTest;
-INSTANTIATE_TEST_CASE_P(HQDownstreamSessionTest,
-                        HQDownstreamSessionTestHQNoSettings,
-                        Values([] {
-                          TestParams tp;
-                          tp.alpn_ = "h3";
-                          tp.shouldSendSettings_ = false;
-                          return tp;
-                        }()),
-                        paramsToTestName);
+INSTANTIATE_TEST_SUITE_P(HQDownstreamSessionTest,
+                         HQDownstreamSessionTestHQNoSettings,
+                         Values([] {
+                           TestParams tp;
+                           tp.alpn_ = "h3";
+                           tp.shouldSendSettings_ = false;
+                           return tp;
+                         }()),
+                         paramsToTestName);
 TEST_P(HQDownstreamSessionTestHQNoSettings, SimpleGet) {
   auto idh = checkRequest();
   flushRequestsAndLoop();
@@ -2647,28 +2825,46 @@ TEST_P(HQDownstreamSessionTest, DelegateResponse) {
     hqSession_->closeWhenIdle();
     return;
   }
-  auto streamId = sendRequest("/cdn.thing", 0, true);
+  // Send a request but use DSR to delegate the response.
+  // This test exits normally.
+  sendRequest("/cdn.thing", 0, true);
   InSequence handlerSequence;
   auto handler = addSimpleStrictHandler();
   handler->expectHeaders();
   auto dsrRequestSender = std::make_unique<MockQuicDSRRequestSender>();
   auto rawDsrSender = dsrRequestSender.get();
+  std::unique_ptr<quic::DSRPacketizationRequestSender> senderStorage;
   handler->expectEOM([&]() {
     handler->txn_->setTransportCallback(&transportCallback_);
+    auto mockDsrRequestSender =
+        dynamic_cast<MockDSRRequestSender*>(rawDsrSender);
+    CHECK(mockDsrRequestSender);
     EXPECT_CALL(*socketDriver_->getSocket(),
-                setDSRPacketizationRequestSenderRef(_, _))
+                setDSRPacketizationRequestSender(_, _))
         .Times(1)
         .WillOnce(Invoke(
             [&](StreamId,
-                const std::unique_ptr<quic::DSRPacketizationRequestSender>&
-                    sender) {
+                std::unique_ptr<quic::DSRPacketizationRequestSender> sender) {
               EXPECT_EQ(rawDsrSender, sender.get());
+              senderStorage = std::move(sender);
               return folly::unit;
             }));
+    folly::Optional<size_t> headerBytes;
+    EXPECT_CALL(*mockDsrRequestSender, onHeaderBytesGenerated(_))
+        .WillOnce(Invoke([&](auto bytes) {
+          handler->txn_->addBufferMeta();
+          handler->txn_->sendEOM();
+          headerBytes = bytes;
+        }));
     EXPECT_TRUE(handler->sendHeadersWithDelegate(
-        200, 1000 * 20, std::move(dsrRequestSender)));
+        200, 1000 * 10, std::move(dsrRequestSender)));
     EXPECT_GT(transportCallback_.bodyBytesGenerated_, 0);
     auto dataFrameHeaderSize = transportCallback_.bodyBytesGenerated_;
+    ASSERT_TRUE(headerBytes.hasValue());
+    // TODO is + 5 really the best way to encode this?
+    EXPECT_EQ(
+        *headerBytes,
+        dataFrameHeaderSize + transportCallback_.headerBytesGenerated_ + 5);
     EXPECT_TRUE(handler->txn_->isEgressStarted());
     handler->txn_->onWriteReady(10 * 1000, 1.0);
     EXPECT_EQ(transportCallback_.bodyBytesGenerated_,
@@ -2677,7 +2873,68 @@ TEST_P(HQDownstreamSessionTest, DelegateResponse) {
     // writeBufMeta, there is an extra loop. So the verification + abort also
     // needs to be placed in a later loop.
     eventBase_.runInLoop([&] {
-      EXPECT_TRUE(transportCallback_.lastByteFlushed_);
+      ASSERT_TRUE(transportCallback_.lastByteFlushed_);
+      handler->expectDetachTransaction();
+    });
+  });
+  flushRequestsAndLoop();
+  hqSession_->closeWhenIdle();
+}
+
+TEST_P(HQDownstreamSessionTest, DelegateResponseError) {
+  if (!IS_HQ) {
+    hqSession_->closeWhenIdle();
+    return;
+  }
+  // Send a request but use DSR to delegate the response.
+  // This test exits via the error path on the DSR request.
+  auto streamId = sendRequest("/cdn.thing", 0, true);
+  InSequence handlerSequence;
+  auto handler = addSimpleStrictHandler();
+  handler->expectHeaders();
+  auto dsrRequestSender = std::make_unique<MockQuicDSRRequestSender>();
+  auto rawDsrSender = dsrRequestSender.get();
+  std::unique_ptr<quic::DSRPacketizationRequestSender> senderStorage;
+  handler->expectEOM([&]() {
+    handler->txn_->setTransportCallback(&transportCallback_);
+    auto mockDsrRequestSender =
+        dynamic_cast<MockDSRRequestSender*>(rawDsrSender);
+    CHECK(mockDsrRequestSender);
+    EXPECT_CALL(*socketDriver_->getSocket(),
+                setDSRPacketizationRequestSender(_, _))
+        .Times(1)
+        .WillOnce(Invoke(
+            [&](StreamId,
+                std::unique_ptr<quic::DSRPacketizationRequestSender> sender) {
+              EXPECT_EQ(rawDsrSender, sender.get());
+              senderStorage = std::move(sender);
+              return folly::unit;
+            }));
+    folly::Optional<size_t> headerBytes;
+    EXPECT_CALL(*mockDsrRequestSender, onHeaderBytesGenerated(_))
+        .WillOnce(Invoke([&](auto bytes) {
+          handler->txn_->addBufferMeta();
+          handler->txn_->sendEOM();
+          headerBytes = bytes;
+        }));
+    EXPECT_TRUE(handler->sendHeadersWithDelegate(
+        200, 1000 * 10, std::move(dsrRequestSender)));
+    EXPECT_GT(transportCallback_.bodyBytesGenerated_, 0);
+    auto dataFrameHeaderSize = transportCallback_.bodyBytesGenerated_;
+    ASSERT_TRUE(headerBytes.hasValue());
+    // TODO is + 5 really the best way to encode this?
+    EXPECT_EQ(
+        *headerBytes,
+        dataFrameHeaderSize + transportCallback_.headerBytesGenerated_ + 5);
+    EXPECT_TRUE(handler->txn_->isEgressStarted());
+    handler->txn_->onWriteReady(10 * 1000, 1.0);
+    EXPECT_EQ(transportCallback_.bodyBytesGenerated_,
+              10 * 1000 + dataFrameHeaderSize);
+    // from sendHeadersWithDelegate, to actually doing writeChain and
+    // writeBufMeta, there is an extra loop. So the verification + abort also
+    // needs to be placed in a later loop.
+    eventBase_.runInLoop([&] {
+      ASSERT_TRUE(transportCallback_.lastByteFlushed_);
       // Both onStopSending and terminate the handler can clear the buffered
       // BufMetas and make the transaction detachable.
       handler->expectDetachTransaction();
@@ -2745,108 +3002,156 @@ TEST_P(HQDownstreamSessionTest, getHTTPPriority) {
   hqSession_->closeWhenIdle();
 }
 
+TEST_P(HQDownstreamSessionTest, IdleTimeoutNoStreams) {
+  std::chrono::milliseconds connIdleTimeout{200};
+  auto connManager = wangle::ConnectionManager::makeUnique(
+      &eventBase_, connIdleTimeout, nullptr);
+  connManager->addConnection(hqSession_, true);
+  // Just run the loop, the session will timeout, drain and close
+  auto start = std::chrono::steady_clock::now();
+  eventBase_.loop();
+  auto end = std::chrono::steady_clock::now();
+  EXPECT_GE(std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+                .count(),
+            connIdleTimeout.count());
+}
+
+TEST_P(HQDownstreamSessionTest, IdleTimeoutResetWithPing) {
+  std::chrono::milliseconds connIdleTimeout{200};
+  auto connManager = wangle::ConnectionManager::makeUnique(
+      &eventBase_, connIdleTimeout, nullptr);
+  connManager->addConnection(hqSession_, true);
+  for (int i = 1; i <= 4; i++) {
+    socketDriver_->addPingReceivedReadEvent(std::chrono::milliseconds(100));
+  }
+  // Just run the loop, the session will timeout, drain and close
+  auto start = std::chrono::steady_clock::now();
+  flushRequestsAndLoop();
+  auto end = std::chrono::steady_clock::now();
+  EXPECT_GE(std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+                .count(),
+            connIdleTimeout.count() * 2);
+}
+
+TEST_P(HQDownstreamSessionTest, IdleTimeoutResetWithPingAcknowledged) {
+  std::chrono::milliseconds connIdleTimeout{200};
+  auto connManager = wangle::ConnectionManager::makeUnique(
+      &eventBase_, connIdleTimeout, nullptr);
+  connManager->addConnection(hqSession_, true);
+  for (int i = 1; i <= 4; i++) {
+    socketDriver_->addPingAcknowledgedReadEvent(std::chrono::milliseconds(100));
+  }
+  // Just run the loop, the session will timeout, drain and close
+  auto start = std::chrono::steady_clock::now();
+  flushRequestsAndLoop();
+  auto end = std::chrono::steady_clock::now();
+  EXPECT_GE(std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+                .count(),
+            connIdleTimeout.count() * 2);
+}
+
 /**
  * Instantiate the Parametrized test cases
  */
 
 // Make sure all the tests keep working with all the supported protocol versions
-INSTANTIATE_TEST_CASE_P(HQDownstreamSessionTest,
-                        HQDownstreamSessionTest,
-                        Values(
-                            [] {
-                              TestParams tp;
-                              tp.alpn_ = "h1q-fb";
-                              return tp;
-                            }(),
-                            [] {
-                              TestParams tp;
-                              tp.alpn_ = "h1q-fb-v2";
-                              return tp;
-                            }(),
-                            [] {
-                              TestParams tp;
-                              tp.alpn_ = "h3";
-                              return tp;
-                            }()),
-                        paramsToTestName);
+INSTANTIATE_TEST_SUITE_P(HQDownstreamSessionTest,
+                         HQDownstreamSessionTest,
+                         Values(
+                             [] {
+                               TestParams tp;
+                               tp.alpn_ = "h1q-fb";
+                               return tp;
+                             }(),
+                             [] {
+                               TestParams tp;
+                               tp.alpn_ = "h1q-fb-v2";
+                               return tp;
+                             }(),
+                             [] {
+                               TestParams tp;
+                               tp.alpn_ = "h3";
+                               return tp;
+                             }()),
+                         paramsToTestName);
 
 // Instantiate h1q only tests that work on all versions
-INSTANTIATE_TEST_CASE_P(HQDownstreamSessionTest,
-                        HQDownstreamSessionTestH1q,
-                        Values(
-                            [] {
-                              TestParams tp;
-                              tp.alpn_ = "h1q-fb";
-                              return tp;
-                            }(),
-                            [] {
-                              TestParams tp;
-                              tp.alpn_ = "h1q-fb-v2";
-                              return tp;
-                            }()),
-                        paramsToTestName);
+INSTANTIATE_TEST_SUITE_P(HQDownstreamSessionTest,
+                         HQDownstreamSessionTestH1q,
+                         Values(
+                             [] {
+                               TestParams tp;
+                               tp.alpn_ = "h1q-fb";
+                               return tp;
+                             }(),
+                             [] {
+                               TestParams tp;
+                               tp.alpn_ = "h1q-fb-v2";
+                               return tp;
+                             }()),
+                         paramsToTestName);
 
 // Instantiate common tests for h1q-fb-v2 and hq (goaway)
-INSTANTIATE_TEST_CASE_P(HQDownstreamSessionTest,
-                        HQDownstreamSessionTestH1qv2HQ,
-                        Values(
-                            [] {
-                              TestParams tp;
-                              tp.alpn_ = "h1q-fb-v2";
-                              return tp;
-                            }(),
-                            [] {
-                              TestParams tp;
-                              tp.alpn_ = "h3";
-                              return tp;
-                            }()),
-                        paramsToTestName);
+INSTANTIATE_TEST_SUITE_P(HQDownstreamSessionTest,
+                         HQDownstreamSessionTestH1qv2HQ,
+                         Values(
+                             [] {
+                               TestParams tp;
+                               tp.alpn_ = "h1q-fb-v2";
+                               return tp;
+                             }(),
+                             [] {
+                               TestParams tp;
+                               tp.alpn_ = "h3";
+                               return tp;
+                             }()),
+                         paramsToTestName);
 
-INSTANTIATE_TEST_CASE_P(HQDownstreamSessionTest,
-                        HQDownstreamSessionFilterTestHQ,
-                        Values([] {
-                          TestParams tp;
-                          tp.alpn_ = "h3";
-                          tp.createQPACKStreams_ = true;
-                          tp.shouldSendSettings_ = false;
-                          return tp;
-                        }()),
-                        paramsToTestName);
+INSTANTIATE_TEST_SUITE_P(HQDownstreamSessionTest,
+                         HQDownstreamSessionFilterTestHQ,
+                         Values([] {
+                           TestParams tp;
+                           tp.alpn_ = "h3";
+                           tp.createQPACKStreams_ = true;
+                           tp.shouldSendSettings_ = false;
+                           return tp;
+                         }()),
+                         paramsToTestName);
 
-INSTANTIATE_TEST_CASE_P(HQDownstreamSessionBeforeTransportReadyTest,
-                        HQDownstreamSessionBeforeTransportReadyTest,
-                        Values(
-                            [] {
-                              TestParams tp;
-                              tp.alpn_ = "h1q-fb-v2";
-                              return tp;
-                            }(),
-                            [] {
-                              TestParams tp;
-                              tp.alpn_ = "h3";
-                              return tp;
-                            }()),
-                        paramsToTestName);
+INSTANTIATE_TEST_SUITE_P(HQDownstreamSessionBeforeTransportReadyTest,
+                         HQDownstreamSessionBeforeTransportReadyTest,
+                         Values(
+                             [] {
+                               TestParams tp;
+                               tp.alpn_ = "h1q-fb-v2";
+                               return tp;
+                             }(),
+                             [] {
+                               TestParams tp;
+                               tp.alpn_ = "h3";
+                               return tp;
+                             }()),
+                         paramsToTestName);
 
 // Instantiate h1q-fb-v1 only tests
-INSTANTIATE_TEST_CASE_P(HQDownstreamSessionTest,
-                        HQDownstreamSessionTestH1qv1,
-                        Values([] {
-                          TestParams tp;
-                          tp.alpn_ = "h1q-fb";
-                          return tp;
-                        }()),
-                        paramsToTestName);
+INSTANTIATE_TEST_SUITE_P(HQDownstreamSessionTest,
+                         HQDownstreamSessionTestH1qv1,
+                         Values([] {
+                           TestParams tp;
+                           tp.alpn_ = "h1q-fb";
+                           return tp;
+                         }()),
+                         paramsToTestName);
 
 // Instantiate hq only tests
-INSTANTIATE_TEST_CASE_P(HQDownstreamSessionTest,
-                        HQDownstreamSessionTestHQ,
-                        Values([] {
-                          TestParams tp;
-                          tp.alpn_ = "h3";
-                          return tp;
-                        }()),
-                        paramsToTestName);
+INSTANTIATE_TEST_SUITE_P(HQDownstreamSessionTest,
+                         HQDownstreamSessionTestHQ,
+                         Values([] {
+                           TestParams tp;
+                           tp.alpn_ = "h3";
+                           return tp;
+                         }()),
+                         paramsToTestName);
 
 TEST_P(HQDownstreamSessionTestHQPush, SimplePush) {
   auto id = sendRequest("/", 1);
@@ -2881,9 +3186,9 @@ TEST_P(HQDownstreamSessionTestHQPush, SimplePush) {
     pushTxn->sendBody(makeBuf(200));
     pushTxn->sendEOM();
   });
-  EXPECT_CALL(pushHandler, setTransaction(_))
+  EXPECT_CALL(pushHandler, _setTransaction(_))
       .WillOnce(Invoke([&](HTTPTransaction* txn) { pushHandler.txn_ = txn; }));
-  EXPECT_CALL(pushHandler, detachTransaction());
+  EXPECT_CALL(pushHandler, _detachTransaction());
 
   flushRequestsAndLoopN(1);
   handler->txn_->sendEOM();
@@ -2925,9 +3230,9 @@ TEST_P(HQDownstreamSessionTestHQPush, PushPriorityCallback) {
     pushTxn->sendBody(makeBuf(200));
     pushTxn->sendEOM();
   });
-  EXPECT_CALL(pushHandler, setTransaction(_))
+  EXPECT_CALL(pushHandler, _setTransaction(_))
       .WillOnce(Invoke([&](HTTPTransaction* txn) { pushHandler.txn_ = txn; }));
-  EXPECT_CALL(pushHandler, detachTransaction());
+  EXPECT_CALL(pushHandler, _detachTransaction());
 
   flushRequestsAndLoopN(1);
 
@@ -2985,10 +3290,10 @@ TEST_P(HQDownstreamSessionTestHQPush, StopSending) {
     pushTxn->sendBody(makeBuf(200));
     // NO EOM
   });
-  EXPECT_CALL(pushHandler, setTransaction(_))
+  EXPECT_CALL(pushHandler, _setTransaction(_))
       .WillOnce(Invoke([&](HTTPTransaction* txn) { pushHandler.txn_ = txn; }));
-  EXPECT_CALL(pushHandler, onError(_));
-  EXPECT_CALL(pushHandler, detachTransaction());
+  EXPECT_CALL(pushHandler, _onError(_));
+  EXPECT_CALL(pushHandler, _detachTransaction());
 
   flushRequestsAndLoopN(1);
   handler->txn_->sendEOM();
@@ -3010,40 +3315,50 @@ TEST_P(HQDownstreamSessionTestHQPush, StopSending) {
 using DropConnectionInTransportReadyTest =
     HQDownstreamSessionBeforeTransportReadyTest;
 
-INSTANTIATE_TEST_CASE_P(DropConnectionInTransportReadyTest,
-                        DropConnectionInTransportReadyTest,
-                        Values(
-                            [] {
-                              TestParams tp;
-                              tp.alpn_ = "unsupported";
-                              tp.expectOnTransportReady = false;
-                              return tp;
-                            }(),
-                            [] {
-                              TestParams tp;
-                              tp.alpn_ = "h3";
-                              tp.unidirectionalStreamsCredit = 1;
-                              tp.expectOnTransportReady = false;
-                              return tp;
-                            }(),
-                            [] {
-                              TestParams tp;
-                              tp.alpn_ = "h1q-fb-v2";
-                              tp.unidirectionalStreamsCredit = 0;
-                              tp.expectOnTransportReady = false;
-                              return tp;
-                            }()),
-                        paramsToTestName);
+INSTANTIATE_TEST_SUITE_P(ControlStreamsStallTest,
+                         ControlStreamsStallTest,
+                         Values([] {
+                           TestParams tp;
+                           tp.alpn_ = "h3";
+                           tp.checkUniridStreamCallbacks = false;
+                           return tp;
+                         }()),
+                         paramsToTestName);
+
+INSTANTIATE_TEST_SUITE_P(DropConnectionInTransportReadyTest,
+                         DropConnectionInTransportReadyTest,
+                         Values(
+                             [] {
+                               TestParams tp;
+                               tp.alpn_ = "unsupported";
+                               tp.expectOnTransportReady = false;
+                               return tp;
+                             }(),
+                             [] {
+                               TestParams tp;
+                               tp.alpn_ = "h3";
+                               tp.unidirectionalStreamsCredit = 1;
+                               tp.expectOnTransportReady = false;
+                               return tp;
+                             }(),
+                             [] {
+                               TestParams tp;
+                               tp.alpn_ = "h1q-fb-v2";
+                               tp.unidirectionalStreamsCredit = 0;
+                               tp.expectOnTransportReady = false;
+                               return tp;
+                             }()),
+                         paramsToTestName);
 // Instantiate hq server push tests
-INSTANTIATE_TEST_CASE_P(HQDownstreamSessionTest,
-                        HQDownstreamSessionTestHQPush,
-                        Values([] {
-                          TestParams tp;
-                          tp.alpn_ = "h3";
-                          tp.unidirectionalStreamsCredit = 8;
-                          return tp;
-                        }()),
-                        paramsToTestName);
+INSTANTIATE_TEST_SUITE_P(HQDownstreamSessionTest,
+                         HQDownstreamSessionTestHQPush,
+                         Values([] {
+                           TestParams tp;
+                           tp.alpn_ = "h3";
+                           tp.unidirectionalStreamsCredit = 8;
+                           return tp;
+                         }()),
+                         paramsToTestName);
 
 // Use this test class for mismatched alpn tests
 class HQDownstreamSessionTestUnsupportedAlpn : public HQDownstreamSessionTest {
@@ -3084,9 +3399,13 @@ TEST_P(HQDownstreamSessionTestHQDeliveryAck,
   // This is a copy of the one in MockQuicSocketDriver, only hijacks data stream
   // and forces an error.
   EXPECT_CALL(*sock,
-              registerDeliveryCallback(testing::_, testing::_, testing::_))
+              registerByteEventCallback(quic::QuicSocket::ByteEvent::Type::ACK,
+                                        testing::_,
+                                        testing::_,
+                                        testing::_))
       .WillRepeatedly(
           testing::Invoke([streamId, &socketDriver = socketDriver_](
+                              quic::QuicSocket::ByteEvent::Type,
                               quic::StreamId id,
                               uint64_t offset,
                               MockQuicSocket::ByteEventCallback* cb)
@@ -3107,10 +3426,10 @@ TEST_P(HQDownstreamSessionTestHQDeliveryAck,
             return folly::unit;
           }));
 
-  EXPECT_CALL(*handler, onError(_))
+  EXPECT_CALL(*handler, _onError(_))
       .WillOnce(Invoke([](const HTTPException& error) {
         EXPECT_TRUE(std::string(error.what())
-                        .find("failed to register delivery callback") !=
+                        .find("failed to register byte event callback") !=
                     std::string::npos);
       }));
   handler->expectDetachTransaction();
@@ -3125,20 +3444,48 @@ TEST_P(HQDownstreamSessionTestHQDeliveryAck, TestBodyDeliveryAck) {
   auto handler = addSimpleStrictHandler();
   handler->expectHeaders();
 
+  auto length = 42;
+  auto offset = length - 1;
   // Start the response.
   handler->expectEOM([&]() {
     handler->txn_->setTransportCallback(&transportCallback_);
-    handler->sendHeaders(200, 42);
-    auto res = handler->txn_->setBodyLastByteDeliveryTrackingEnabled(true);
-    EXPECT_TRUE(res);
-    handler->sendBody(42);
+    handler->sendHeaders(200, length);
+    handler->sendBody(length);
+    EXPECT_TRUE(handler->txn_->trackEgressBodyOffset(
+        handler->txn_->bodyBytesSent() - 1, ByteEvent::EventFlags::ACK));
     handler->sendEOM();
   });
 
   handler->expectDetachTransaction();
   flushRequestsAndLoop();
   EXPECT_EQ(transportCallback_.numBodyBytesDeliveredCalls_, 1);
-  EXPECT_EQ(transportCallback_.bodyBytesDeliveredOffset_, 41);
+  EXPECT_EQ(transportCallback_.bodyBytesDeliveredOffset_, offset);
+
+  hqSession_->closeWhenIdle();
+}
+
+TEST_P(HQDownstreamSessionTestHQDeliveryAck, TestBodyTxCallback) {
+  auto req = getGetRequest();
+  sendRequest(req);
+  auto handler = addSimpleStrictHandler();
+  handler->expectHeaders();
+
+  auto length = 42;
+  auto offset = length - 1;
+  // Start the response.
+  handler->expectEOM([&]() {
+    handler->txn_->setTransportCallback(&transportCallback_);
+    handler->sendHeaders(200, length);
+    EXPECT_TRUE(handler->txn_->trackEgressBodyOffset(
+        offset, ByteEvent::EventFlags::TX));
+    handler->sendBody(length);
+    handler->sendEOM();
+  });
+
+  handler->expectDetachTransaction();
+  flushRequestsAndLoop();
+  EXPECT_EQ(transportCallback_.numBodyBytesTxCalls_, 1);
+  EXPECT_EQ(transportCallback_.bodyBytesTxOffset_, offset);
 
   hqSession_->closeWhenIdle();
 }
@@ -3149,12 +3496,18 @@ TEST_P(HQDownstreamSessionTestHQDeliveryAck, TestBodyDeliveryAckMultiple) {
   auto handler = addSimpleStrictHandler();
   handler->expectHeaders();
 
+  auto length = 42 + 17;
+  auto offset1 = 41;
+  auto offset2 = length - 1;
   // Start the response.
   handler->expectEOM([&]() {
     handler->txn_->setTransportCallback(&transportCallback_);
-    handler->sendHeaders(200, 42 + 17);
-    auto res = handler->txn_->setBodyLastByteDeliveryTrackingEnabled(true);
-    EXPECT_TRUE(res);
+    handler->sendHeaders(200, length);
+    // Test registering callbacks before sendBody
+    EXPECT_TRUE(handler->txn_->trackEgressBodyOffset(
+        offset1, ByteEvent::EventFlags::TX | ByteEvent::EventFlags::ACK));
+    EXPECT_TRUE(handler->txn_->trackEgressBodyOffset(
+        offset2, ByteEvent::EventFlags::ACK));
     handler->sendBody(42);
     handler->sendBody(17);
     handler->sendEOM();
@@ -3162,8 +3515,10 @@ TEST_P(HQDownstreamSessionTestHQDeliveryAck, TestBodyDeliveryAckMultiple) {
 
   handler->expectDetachTransaction();
   flushRequestsAndLoop();
+  EXPECT_EQ(transportCallback_.numBodyBytesTxCalls_, 1);
+  EXPECT_EQ(transportCallback_.bodyBytesTxOffset_, offset1);
   EXPECT_EQ(transportCallback_.numBodyBytesDeliveredCalls_, 2);
-  EXPECT_EQ(transportCallback_.bodyBytesDeliveredOffset_, 41 + 17);
+  EXPECT_EQ(transportCallback_.bodyBytesDeliveredOffset_, offset2);
 
   hqSession_->closeWhenIdle();
 }
@@ -3174,12 +3529,14 @@ TEST_P(HQDownstreamSessionTestHQDeliveryAck, TestBodyDeliveryErr) {
   auto handler = addSimpleStrictHandler();
   handler->expectHeaders();
 
+  auto length = 42;
+  auto offset = length - 1;
   // Start the response.
   handler->expectEOM([&]() {
     handler->txn_->setTransportCallback(&transportCallback_);
-    handler->sendHeaders(200, 42);
-    auto res = handler->txn_->setBodyLastByteDeliveryTrackingEnabled(true);
-    EXPECT_TRUE(res);
+    handler->sendHeaders(200, length);
+    EXPECT_TRUE(handler->txn_->trackEgressBodyOffset(
+        offset, ByteEvent::EventFlags::ACK));
   });
   flushRequestsAndLoop();
   EXPECT_TRUE(transportCallback_.lastEgressHeadersByteDelivered_);
@@ -3195,11 +3552,15 @@ TEST_P(HQDownstreamSessionTestHQDeliveryAck, TestBodyDeliveryErr) {
   // This is a copy of the one in MockQuicSocketDriver, only hijacks data stream
   // and forces an error.
   EXPECT_CALL(*sock,
-              registerDeliveryCallback(testing::_, testing::_, testing::_))
+              registerByteEventCallback(quic::QuicSocket::ByteEvent::Type::ACK,
+                                        testing::_,
+                                        testing::_,
+                                        testing::_))
       .WillRepeatedly(testing::Invoke(
           [streamId,
            &streamOffsetAfterHeaders = streamOffsetAfterHeaders,
-           &socketDriver = socketDriver_](quic::StreamId id,
+           &socketDriver = socketDriver_](quic::QuicSocket::ByteEvent::Type,
+                                          quic::StreamId id,
                                           uint64_t offset,
                                           MockQuicSocket::ByteEventCallback* cb)
               -> folly::Expected<folly::Unit, LocalErrorCode> {
@@ -3224,10 +3585,10 @@ TEST_P(HQDownstreamSessionTestHQDeliveryAck, TestBodyDeliveryErr) {
             return folly::unit;
           }));
 
-  EXPECT_CALL(*handler, onError(_))
+  EXPECT_CALL(*handler, _onError(_))
       .WillOnce(Invoke([&handler = handler](const HTTPException& error) {
         EXPECT_TRUE(std::string(error.what())
-                        .find("failed to register delivery callback") !=
+                        .find("failed to register byte event callback") !=
                     std::string::npos);
         handler->txn_->sendAbort();
       }));
@@ -3244,33 +3605,35 @@ TEST_P(HQDownstreamSessionTestHQDeliveryAck, TestBodyDeliveryCancel) {
   auto handler = addSimpleStrictHandler();
   handler->expectHeaders();
 
+  auto length = 42;
+  auto offset = length - 1;
   // Start the response.
   handler->expectEOM([&]() {
     handler->txn_->setTransportCallback(&transportCallback_);
-    handler->sendHeaders(200, 42);
-    auto res = handler->txn_->setBodyLastByteDeliveryTrackingEnabled(true);
-    EXPECT_TRUE(res);
-    handler->sendBody(42);
+    handler->sendHeaders(200, length);
+    EXPECT_TRUE(handler->txn_->trackEgressBodyOffset(
+        offset, ByteEvent::EventFlags::TX | ByteEvent::EventFlags::ACK));
+    handler->sendBody(length);
     // handler->sendEOM();
   });
 
   flushRequestsAndLoopN(1);
 
-  EXPECT_CALL(*handler, onError(_)).Times(1);
+  EXPECT_CALL(*handler, _onError(_)).Times(1);
   handler->expectDetachTransaction();
   socketDriver_->deliverErrorOnAllStreams(
-      std::make_pair(LocalErrorCode::INVALID_OPERATION, "fake error"));
+      quic::QuicError(LocalErrorCode::INVALID_OPERATION, "fake error"));
   flushRequestsAndLoop();
 
-  EXPECT_EQ(transportCallback_.numBodyBytesCanceledCalls_, 1);
-  EXPECT_EQ(transportCallback_.bodyBytesCanceledOffset_, 41);
+  EXPECT_EQ(transportCallback_.numBodyBytesCanceledCalls_, 2);
+  EXPECT_EQ(transportCallback_.bodyBytesCanceledOffset_, offset);
 }
 
-INSTANTIATE_TEST_CASE_P(HQDownstreamSessionTest,
-                        HQDownstreamSessionTestHQDeliveryAck,
-                        Values([] {
-                          TestParams tp;
-                          tp.alpn_ = "h3";
-                          return tp;
-                        }()),
-                        paramsToTestName);
+INSTANTIATE_TEST_SUITE_P(HQDownstreamSessionTest,
+                         HQDownstreamSessionTestHQDeliveryAck,
+                         Values([] {
+                           TestParams tp;
+                           tp.alpn_ = "h3";
+                           return tp;
+                         }()),
+                         paramsToTestName);

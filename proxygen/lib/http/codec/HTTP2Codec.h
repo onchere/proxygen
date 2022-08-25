@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -163,6 +163,8 @@ class HTTP2Codec
 
   static void requestUpgrade(HTTPMessage& request);
 
+  static size_t generateDefaultSettings(folly::IOBufQueue& writeBuf);
+
 #ifndef NDEBUG
   uint64_t getReceivedFrameCount() const {
     return receivedFrameCount_;
@@ -188,6 +190,10 @@ class HTTP2Codec
 
   void setValidateHeaders(bool validate) {
     validateHeaders_ = validate;
+  }
+
+  void setStrictValidation(bool strict) {
+    strictValidation_ = strict;
   }
 
  private:
@@ -241,17 +247,36 @@ class HTTP2Codec
     ErrorCode errorCode{ErrorCode::NO_ERROR};
     bool connectionError{false};
     std::string errorMessage;
+    mutable std::unique_ptr<HTTPMessage> partialMessage;
 
-    DeferredParseError(ErrorCode ec, bool conn, std::string msg)
-        : errorCode(ec), connectionError(conn), errorMessage(std::move(msg)) {
+    DeferredParseError(ErrorCode ec,
+                       bool conn,
+                       std::string msg,
+                       std::unique_ptr<HTTPMessage> partialMsg = nullptr)
+        : errorCode(ec),
+          connectionError(conn),
+          errorMessage(std::move(msg)),
+          partialMessage(std::move(partialMsg)) {
     }
 
     DeferredParseError() = default;
+    DeferredParseError(DeferredParseError&& goner) = default;
+    DeferredParseError& operator=(DeferredParseError&& goner) = default;
+    DeferredParseError(const DeferredParseError& other)
+        : errorCode(other.errorCode),
+          connectionError(other.connectionError),
+
+          errorMessage(other.errorMessage),
+          partialMessage(other.partialMessage ? std::make_unique<HTTPMessage>(
+                                                    *other.partialMessage)
+                                              : nullptr) {
+    }
   };
 
   folly::Expected<std::unique_ptr<HTTPMessage>, DeferredParseError>
   parseHeadersDecodeFrames(
-      const folly::Optional<http2::PriorityUpdate>& priority);
+      const folly::Optional<http2::PriorityUpdate>& priority,
+      const folly::Optional<ExAttributes>& exAttributes);
   void deliverDeferredParseError(const DeferredParseError& parseError);
 
   folly::Optional<ErrorCode> parseHeadersCheckConcurrentStreams(
@@ -273,7 +298,8 @@ class HTTP2Codec
   void streamError(const std::string& msg,
                    ErrorCode error,
                    bool newTxn = false,
-                   folly::Optional<HTTPCodec::StreamID> streamId = folly::none);
+                   folly::Optional<HTTPCodec::StreamID> streamId = folly::none,
+                   std::unique_ptr<HTTPMessage> partialMsg = nullptr);
   bool parsingHeaders() const;
   bool parsingTrailers() const;
 
@@ -304,14 +330,14 @@ class HTTP2Codec
       {SettingsId::HEADER_TABLE_SIZE, 4096},
       {SettingsId::ENABLE_PUSH, 0},
       {SettingsId::MAX_FRAME_SIZE, 16384},
-      {SettingsId::MAX_HEADER_LIST_SIZE, 1 << 17}, // same as SPDYCodec
+      {SettingsId::MAX_HEADER_LIST_SIZE, 1 << 17},
   };
 #ifndef NDEBUG
   uint64_t receivedFrameCount_{0};
 #endif
-  enum FrameState {
+  enum class FrameState : uint8_t {
     UPSTREAM_CONNECTION_PREFACE = 0,
-    DOWNSTREAM_CONNECTION_PREFACE = 1,
+    EXPECT_FIRST_SETTINGS = 1,
     FRAME_HEADER = 2,
     FRAME_DATA = 3,
     DATA_FRAME_DATA = 4,
@@ -336,9 +362,11 @@ class HTTP2Codec
   bool parsingDownstreamTrailers_{false};
   bool addDateToResponse_{true};
   bool validateHeaders_{true};
+  // Default false for now to match existing behavior
+  bool strictValidation_{false};
 
   // CONTINUATION frame can follow either HEADERS or PUSH_PROMISE frames.
-  // Keeps frame type of iniating frame of header block.
+  // Keeps frame type of initiating frame of header block.
   http2::FrameType headerBlockFrameType_{http2::FrameType::DATA};
 };
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -74,7 +74,7 @@ HPACK::DecodeError cancelStream(QPACKDecoder& decoder,
 
 std::string toFixedLengthString(uint32_t i) {
   CHECK_LT(i, 1000);
-  return folly::format("{:3}", i).str();
+  return fmt::format("{:3}", i);
 }
 } // namespace
 

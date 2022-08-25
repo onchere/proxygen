@@ -1,12 +1,12 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-#include "proxygen/lib/utils/ZlibStreamCompressor.h"
+#include <proxygen/lib/utils/ZlibStreamCompressor.h>
 
 #include <folly/io/Cursor.h>
 #include <folly/lang/Bits.h>
@@ -15,9 +15,10 @@ using folly::IOBuf;
 
 // IOBuf uses 24 bytes of data for bookeeping purposes, so requesting for 4073
 // bytes of data will be rounded up to an allocation of 1 page.
-DEFINE_int64(zlib_compressor_buffer_growth,
-             2024,
-             "The buffer growth size to use during IOBuf zlib deflation");
+FOLLY_GFLAGS_DEFINE_int64(
+    zlib_compressor_buffer_growth,
+    2024,
+    "The buffer growth size to use during IOBuf zlib deflation");
 
 namespace proxygen {
 

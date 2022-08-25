@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -11,6 +11,7 @@
 #include <folly/FBVector.h>
 #include <folly/Range.h>
 #include <folly/String.h>
+#include <folly/Utility.h>
 #include <proxygen/lib/http/HTTPCommonHeaders.h>
 #include <proxygen/lib/utils/Export.h>
 #include <proxygen/lib/utils/UtilInl.h>
@@ -351,8 +352,8 @@ class HTTPHeaders {
       return;
     }
 
-    double targetCapacity = capacity_;
-    while (targetCapacity < minCapacity) {
+    double targetCapacity = folly::to_floating_point(capacity_);
+    while (targetCapacity < static_cast<double>(minCapacity)) {
       if (targetCapacity == 0) {
         targetCapacity = kInitialVectorReserve;
       } else {

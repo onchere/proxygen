@@ -1,5 +1,6 @@
 ## Proxygen: Facebook's C++ HTTP Libraries
 
+[![Support Ukraine](https://img.shields.io/badge/Support-Ukraine-FFD500?style=flat&labelColor=005BBB)](https://opensource.facebook.com/support-ukraine)
 [![Linux Build Status](https://github.com/facebook/proxygen/workflows/linux/badge.svg)](https://github.com/facebook/proxygen/actions?workflow=linux)
 [![macOS Build Status](https://github.com/facebook/proxygen/workflows/mac/badge.svg)](https://github.com/facebook/proxygen/actions?workflow=mac)
 
@@ -15,6 +16,9 @@ We have a Google group for general discussions at https://groups.google.com/d/fo
 
 The [original blog post](https://engineering.fb.com/production-engineering/introducing-proxygen-facebook-s-c-http-framework/)
 also has more background on the project.
+
+## Learn More in This Intro Video
+[![Explain Like I’m 5: Proxygen](https://img.youtube.com/vi/OsrBYHIYCYk/0.jpg)](https://www.youtube.com/watch?v=OsrBYHIYCYk)
 
 ### Installing
 

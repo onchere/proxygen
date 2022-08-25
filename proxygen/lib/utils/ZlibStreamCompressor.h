@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -18,7 +18,7 @@ namespace folly {
 class IOBuf;
 }
 
-DECLARE_int64(zlib_compressor_buffer_growth);
+FOLLY_GFLAGS_DECLARE_int64(zlib_compressor_buffer_growth);
 
 namespace proxygen {
 
@@ -26,7 +26,7 @@ class ZlibStreamCompressor : public StreamCompressor {
  public:
   explicit ZlibStreamCompressor(CompressionType type, int level);
 
-  ~ZlibStreamCompressor();
+  ~ZlibStreamCompressor() override;
 
   void init();
 

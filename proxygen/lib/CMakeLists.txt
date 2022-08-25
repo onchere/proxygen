@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -26,6 +26,7 @@ add_custom_command(
         ${CMAKE_CURRENT_SOURCE_DIR}/utils/perfect_hash_table_template.cpp.gperf
     COMMENT "Generating HTTPCommonHeaders.h and HTTPCommonHeaders.cpp"
 )
+
 add_custom_command(
     OUTPUT
         ${PROXYGEN_GENERATED_ROOT}/proxygen/lib/utils/TraceEventType.h
@@ -63,6 +64,7 @@ if (BUILD_QUIC)
         ${HTTP3_SOURCES}
         http/SynchronizedLruQuicPskCache.cpp
         http/HQConnector.cpp
+        http/codec/HTTPBinaryCodec.cpp
         http/codec/HQControlCodec.cpp
         http/codec/HQFramedCodec.cpp
         http/codec/HQFramer.cpp
@@ -75,7 +77,9 @@ if (BUILD_QUIC)
         http/session/HQStreamBase.cpp
         http/session/HQUnidirectionalCallbacks.cpp
         http/session/HQUpstreamSession.cpp
+        transport/H3DatagramAsyncSocket.cpp
         transport/PersistentQuicPskCache.cpp
+        transport/PersistentQuicTokenCache.cpp
     )
   set(
       HTTP3_DEPEND_LIBS
@@ -93,9 +97,9 @@ add_library(
     proxygen
     healthcheck/ServerHealthCheckerCallback.cpp
     http/HTTP3ErrorCode.cpp
+    http/Window.cpp
     http/codec/CodecProtocol.cpp
     http/codec/CodecUtil.cpp
-    http/codec/compress/GzipHeaderCodec.cpp
     http/codec/compress/HeaderIndexingStrategy.cpp
     http/codec/compress/HeaderTable.cpp
     http/codec/compress/HPACKCodec.cpp
@@ -131,8 +135,6 @@ add_library(
     http/codec/HTTPCodecPrinter.cpp
     http/codec/HTTPParallelCodec.cpp
     http/codec/HTTPSettings.cpp
-    http/codec/SPDYCodec.cpp
-    http/codec/SPDYConstants.cpp
     http/codec/TransportDirection.cpp
     http/connpool/ServerIdleSessionController.cpp
     http/connpool/SessionHolder.cpp
@@ -153,6 +155,7 @@ add_library(
     http/ProxygenErrorEnum.cpp
     http/ProxyStatus.cpp
     http/RFC2616.cpp
+    http/sink/HTTPTransactionSink.cpp
     http/session/ByteEvents.cpp
     http/session/ByteEventTracker.cpp
     http/session/CodecErrorResponseHandler.cpp
@@ -163,6 +166,7 @@ add_library(
     http/session/HTTPErrorPage.cpp
     http/session/HTTPEvent.cpp
     http/session/HTTPSessionAcceptor.cpp
+    http/session/HTTPSessionActivityTracker.cpp
     http/session/HTTPSessionBase.cpp
     http/session/HTTPSession.cpp
     http/session/HTTPTransaction.cpp
@@ -175,9 +179,9 @@ add_library(
     http/structuredheaders/StructuredHeadersDecoder.cpp
     http/structuredheaders/StructuredHeadersEncoder.cpp
     http/structuredheaders/StructuredHeadersUtilities.cpp
-    http/Window.cpp
     pools/generators/FileServerListGenerator.cpp
     pools/generators/ServerListGenerator.cpp
+    sampling/Sampling.cpp
     services/RequestWorkerThread.cpp
     services/Service.cpp
     services/WorkerThread.cpp
@@ -276,5 +280,7 @@ add_subdirectory(http/connpool/test)
 add_subdirectory(http/codec/test)
 add_subdirectory(http/codec/compress/test)
 add_subdirectory(http/session/test)
+add_subdirectory(sampling/test)
 add_subdirectory(services/test)
+add_subdirectory(transport/test)
 add_subdirectory(utils/test)

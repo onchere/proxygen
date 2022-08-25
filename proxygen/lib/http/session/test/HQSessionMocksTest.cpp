@@ -1,12 +1,12 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-#include "proxygen/lib/http/session/test/HQSessionMocks.h"
+#include <proxygen/lib/http/session/test/HQSessionMocks.h>
 #include <proxygen/lib/http/session/test/HTTPSessionMocks.h>
 #include <proxygen/lib/http/session/test/HTTPTransactionMocks.h>
 
@@ -47,7 +47,7 @@ TEST_F(MocksTest, MockHQSessionNewTransaction) {
   // Capture the transaction object that HQSession will pass to the
   // handler
   HTTPTransaction* txn;
-  EXPECT_CALL(*handler_, setTransaction(_)).WillOnce(SaveArg<0>(&txn));
+  EXPECT_CALL(*handler_, _setTransaction(_)).WillOnce(SaveArg<0>(&txn));
 
   hqSession_->newTransaction(handler_.get());
 
@@ -68,7 +68,7 @@ TEST_F(MocksTest, MockHQSessionPropagatesQuickProtocolInfo) {
   // Capture the transaction object that HQSession will pass to the
   // handler
   HTTPTransaction* txn;
-  EXPECT_CALL(*handler_, setTransaction(_)).WillOnce(SaveArg<0>(&txn));
+  EXPECT_CALL(*handler_, _setTransaction(_)).WillOnce(SaveArg<0>(&txn));
 
   hqSession_->newTransaction(handler_.get());
 

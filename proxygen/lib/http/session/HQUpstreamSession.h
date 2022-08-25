@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -23,10 +23,7 @@ class HQUpstreamSession : public HQSession {
                     const std::chrono::milliseconds connectTimeoutMs,
                     HTTPSessionController* controller,
                     const wangle::TransportInfo& tinfo,
-                    InfoCallback* sessionInfoCb,
-                    folly::Function<void(HTTPCodecFilterChain& chain)>
-                    /* codecFilterCallbackFn */
-                    = nullptr)
+                    InfoCallback* sessionInfoCb)
       : HQSession(transactionsTimeout,
                   controller,
                   proxygen::TransportDirection::UPSTREAM,
@@ -71,8 +68,7 @@ class HQUpstreamSession : public HQSession {
                               HTTPMessage* /* msg */) override {
   }
 
-  void onConnectionErrorHandler(
-      std::pair<quic::QuicErrorCode, std::string> code) noexcept override;
+  void onConnectionSetupErrorHandler(quic::QuicError code) noexcept override;
 
   bool isDetachable(bool checkSocket) const override;
 
@@ -88,6 +84,14 @@ class HQUpstreamSession : public HQSession {
 
   void onNetworkSwitch(
       std::unique_ptr<folly::AsyncUDPSocket>) noexcept override;
+
+  /**
+   * Returns true iff a new outgoing transaction can be made on this session
+   */
+  bool supportsMoreTransactions() const override {
+    return sock_ && sock_->getNumOpenableBidirectionalStreams() &&
+           HTTPSessionBase::supportsMoreTransactions();
+  }
 
   uint32_t getNumOutgoingStreams() const override {
     // need transport API
@@ -160,8 +164,8 @@ class HQUpstreamSession : public HQSession {
                  << " txn=" << txn_ << " pushID=" << pushId
                  << " parentTxnId=" << parentTxnId;
       session_.dropConnectionAsync(
-          std::make_pair(HTTP3::ErrorCode::HTTP_FRAME_UNEXPECTED,
-                         "Push promise on push stream"),
+          quic::QuicError(HTTP3::ErrorCode::HTTP_FRAME_UNEXPECTED,
+                          "Push promise on push stream"),
           kErrorConnection);
     }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -41,6 +41,11 @@ class HTTPConnector : protected folly::AsyncSocket::ConnectCallback {
     }
     virtual void connectSuccess(HTTPUpstreamSession* session) = 0;
     virtual void connectError(const folly::AsyncSocketException& ex) = 0;
+    // Called when the transport is about to be connected - similar to
+    // AsyncSocket::ConnectCallback::preConnect but provides access to the
+    // AsyncTransport API instead of the fd
+    virtual void preConnect(folly::AsyncTransport*) {
+    }
   };
 
   /**

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -261,7 +261,7 @@ class CompressionFilterTest : public Test {
 
 typedef ::testing::Types<ZlibTest, ZstdTest> CompressionCodecs;
 
-TYPED_TEST_CASE(CompressionFilterTest, CompressionCodecs);
+TYPED_TEST_SUITE(CompressionFilterTest, CompressionCodecs);
 
 // Basic smoke test
 TYPED_TEST(CompressionFilterTest, NonchunkedCompression) {

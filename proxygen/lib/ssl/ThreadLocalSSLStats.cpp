@@ -1,12 +1,12 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-#include "proxygen/lib/ssl/ThreadLocalSSLStats.h"
+#include <proxygen/lib/ssl/ThreadLocalSSLStats.h>
 
 using facebook::fb303::AVG;
 using facebook::fb303::PERCENT;
@@ -67,6 +67,11 @@ TLSSLStats::TLSSLStats(const std::string& prefix)
       sslServerCertExpiring_(prefix + "_ssl_server_cert_expiring", SUM),
       sslServerCertExpiringCritical_(
           prefix + "_ssl_server_cert_expiring_critical", SUM),
+      tlsUnknown_(prefix + "_tls_unknown", SUM),
+      tlsVersion_1_0_(prefix + "_tls_v1_0", SUM),
+      tlsVersion_1_1_(prefix + "_tls_v1_1", SUM),
+      tlsVersion_1_2_(prefix + "_tls_v1_2", SUM),
+      tlsInsecureConnection(prefix + "_tls_insecure_connection", SUM),
       fizzPskTypeNotSupported_(prefix + "_fizz_psktype_not_supported", SUM),
       fizzPskTypeNotAttempted_(prefix + "_fizz_psktype_not_attempted", SUM),
       fizzPskTypeRejected_(prefix + "_fizz_psktype_rejected", SUM),
@@ -223,6 +228,33 @@ void TLSSLStats::recordServerCertExpiring() noexcept {
 
 void TLSSLStats::recordServerCertExpiringCritical() noexcept {
   sslServerCertExpiringCritical_.add(1);
+}
+
+void TLSSLStats::recordTLSVersion(fizz::ProtocolVersion tlsVersion) noexcept {
+  switch (tlsVersion) {
+    case fizz::ProtocolVersion::tls_1_0:
+      tlsVersion_1_0_.add(1);
+      return;
+    case fizz::ProtocolVersion::tls_1_1:
+      tlsVersion_1_1_.add(1);
+      return;
+    case fizz::ProtocolVersion::tls_1_2:
+      tlsVersion_1_2_.add(1);
+      return;
+    case fizz::ProtocolVersion::tls_1_3:
+    case fizz::ProtocolVersion::tls_1_3_23:
+    case fizz::ProtocolVersion::tls_1_3_23_fb:
+    case fizz::ProtocolVersion::tls_1_3_26:
+    case fizz::ProtocolVersion::tls_1_3_26_fb:
+    case fizz::ProtocolVersion::tls_1_3_28:
+      // (SLB|tunnel).fizz_handshake_successes.sum.60 is an equivalent counter
+      return;
+  }
+  tlsUnknown_.add(1);
+}
+
+void TLSSLStats::recordInsecureConnection() noexcept {
+  tlsInsecureConnection.add(1);
 }
 
 } // namespace proxygen

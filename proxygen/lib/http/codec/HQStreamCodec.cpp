@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -75,6 +75,8 @@ ParseResult HQStreamCodec::checkFrameAllowed(FrameType type) {
     case hq::FrameType::CANCEL_PUSH:
     case hq::FrameType::PRIORITY_UPDATE:
     case hq::FrameType::PUSH_PRIORITY_UPDATE:
+    case hq::FrameType::FB_PRIORITY_UPDATE:
+    case hq::FrameType::FB_PUSH_PRIORITY_UPDATE:
       return HTTP3::ErrorCode::HTTP_FRAME_UNEXPECTED;
     case hq::FrameType::PUSH_PROMISE:
       if (transportDirection_ == TransportDirection::DOWNSTREAM) {
@@ -140,7 +142,10 @@ ParseResult HQStreamCodec::parseHeaders(Cursor& cursor,
     callback_->onMessageBegin(streamId_, nullptr);
   }
   decodeInfo_.init(transportDirection_ == TransportDirection::DOWNSTREAM,
-                   parsingTrailers_);
+                   parsingTrailers_,
+                   /*validate=*/true,
+                   strictValidation_,
+                   /*allowEmptyPath=*/false);
   headerCodec_.decodeStreaming(
       streamId_, std::move(outHeaderData), header.length, this);
   // decodeInfo_.msg gets moved in onHeadersComplete.  If it is still around,
@@ -170,7 +175,11 @@ ParseResult HQStreamCodec::parsePushPromise(Cursor& cursor,
     callback_->onPushMessageBegin(outPushId, streamId_, nullptr);
   }
 
-  decodeInfo_.init(true /* isReq */, false /* isRequestTrailers */);
+  decodeInfo_.init(true /* isReq */,
+                   false /* isRequestTrailers */,
+                   /*validate=*/true,
+                   strictValidation_,
+                   /*allowEmptyPath=*/false);
   auto headerDataLength = outHeaderData->computeChainDataLength();
   headerCodec_.decodeStreaming(
       streamId_, std::move(outHeaderData), headerDataLength, this);
@@ -203,22 +212,26 @@ void HQStreamCodec::onHeadersComplete(HTTPHeaderSize decodedSize,
   // Check parsing error
   DCHECK_EQ(decodeInfo_.decodeError, HPACK::DecodeError::NONE);
   // Leave msg in decodeInfo_ for now, to keep the parser paused
-  if (decodeInfo_.parsingError != "") {
+  if (!decodeInfo_.parsingError.empty()) {
     LOG(ERROR) << "Failed parsing header list for stream=" << streamId_
                << ", error=" << decodeInfo_.parsingError;
+    if (!decodeInfo_.headerErrorValue.empty()) {
+      std::cerr << " value=" << decodeInfo_.headerErrorValue << std::endl;
+    }
     HTTPException err(
         HTTPException::Direction::INGRESS,
-        folly::format(
-            "HQStreamCodec stream error: stream={} status={} error:{}",
-            streamId_,
-            400,
-            decodeInfo_.parsingError)
-            .str());
+        fmt::format("HQStreamCodec stream error: stream={} status={} error:{}",
+                    streamId_,
+                    400,
+                    decodeInfo_.parsingError));
     if (parsingTrailers_) {
       err.setHttp3ErrorCode(HTTP3::ErrorCode::HTTP_MESSAGE_ERROR);
     } else {
       err.setHttpStatusCode(400);
     }
+    err.setProxygenError(kErrorParseHeader);
+    // Have to clone it
+    err.setPartialMsg(std::make_unique<HTTPMessage>(*decodeInfo_.msg));
     callback_->onError(streamId_, err, true);
     resumeParser.dismiss();
     return;

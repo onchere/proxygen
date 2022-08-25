@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -13,7 +13,6 @@
 #include <proxygen/lib/http/codec/DefaultHTTPCodecFactory.h>
 #include <proxygen/lib/http/codec/HTTP1xCodec.h>
 #include <proxygen/lib/http/codec/HTTP2Codec.h>
-#include <proxygen/lib/http/codec/SPDYCodec.h>
 #include <proxygen/lib/http/session/HTTPTransaction.h>
 #include <proxygen/lib/http/session/HTTPUpstreamSession.h>
 #include <wangle/ssl/SSLUtil.h>
@@ -68,6 +67,7 @@ void HTTPConnector::connect(EventBase* eventBase,
   auto sock = new AsyncSocket(eventBase);
   socket_.reset(sock);
   connectStart_ = getCurrentTime();
+  cb_->preConnect(sock);
   sock->connect(this, connectAddr, timeoutMs.count(), socketOptions, bindAddr);
 }
 
@@ -91,6 +91,7 @@ void HTTPConnector::connectSSL(EventBase* eventBase,
   sslSock->forceCacheAddrOnFailure(true);
   socket_.reset(sslSock);
   connectStart_ = getCurrentTime();
+  cb_->preConnect(sslSock);
   sslSock->connect(
       this, connectAddr, timeoutMs.count(), socketOptions, bindAddr);
 }

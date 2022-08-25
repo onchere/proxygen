@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -121,12 +121,12 @@ void HTTPSessionAcceptor::onNewConnection(folly::AsyncTransport::UniquePtr sock,
   }
   session->setSessionStats(downstreamSessionStats_);
   Acceptor::addConnection(session);
-  session->startNow();
+  startSession(*session);
 }
 
 size_t HTTPSessionAcceptor::dropIdleConnections(size_t num) {
   // release in batch for more efficiency
-  VLOG(6) << "attempt to release resource";
+  VLOG(6) << "attempt to drop downstream idle connections";
   return downstreamConnectionManager_->dropIdleConnections(num);
 }
 

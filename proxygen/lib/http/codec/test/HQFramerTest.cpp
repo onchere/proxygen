@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -174,7 +174,7 @@ TEST_P(HQFramerTestDataOnlyFrames, TestDataOnlyFrame) {
   EXPECT_EQ(outBuf->moveToFbString(), data->moveToFbString());
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     DataOnlyFrameWriteParseTests,
     HQFramerTestDataOnlyFrames,
     Values((DataOnlyFrameParams){proxygen::hq::FrameType::DATA,
@@ -278,7 +278,7 @@ TEST_P(HQFramerTestIdOnlyFrames, TestIdOnlyFrame) {
   }
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     IdOnlyFrameWriteParseTests,
     HQFramerTestIdOnlyFrames,
     Values((IdOnlyFrameParams){proxygen::hq::FrameType::CANCEL_PUSH,
@@ -380,7 +380,7 @@ TEST_P(HQFramerTestSettingsValues, ValueAllowed) {
   }
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     SettingsValuesAllowedTests,
     HQFramerTestSettingsValues,
     Values((SettingsValuesParams){hq::SettingId::MAX_HEADER_LIST_SIZE, 0, true},
@@ -461,7 +461,7 @@ TEST_F(HQFramerTest, PriorityUpdate) {
   parse(folly::none, &parsePriorityUpdate, header, outId, outPriority);
 
   EXPECT_EQ(126, outId);
-  EXPECT_EQ(proxygen::hq::FrameType::PRIORITY_UPDATE, header.type);
+  EXPECT_EQ(proxygen::hq::FrameType::FB_PRIORITY_UPDATE, header.type);
   EXPECT_EQ(3, outPriority.urgency);
   EXPECT_TRUE(outPriority.incremental);
 }
@@ -474,7 +474,7 @@ TEST_F(HQFramerTest, PriorityUpdateWithoutIncremental) {
   parse(folly::none, &parsePriorityUpdate, header, outId, outPriority);
 
   EXPECT_EQ(357, outId);
-  EXPECT_EQ(proxygen::hq::FrameType::PRIORITY_UPDATE, header.type);
+  EXPECT_EQ(proxygen::hq::FrameType::FB_PRIORITY_UPDATE, header.type);
   EXPECT_EQ(7, outPriority.urgency);
   EXPECT_FALSE(outPriority.incremental);
 }

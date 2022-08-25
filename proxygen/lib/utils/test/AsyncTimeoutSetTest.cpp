@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -30,7 +30,7 @@ class MockTimeoutClock : public AsyncTimeoutSet::TimeoutClock {
   MockTimeoutClock() {
   }
 
-  MOCK_METHOD0(millisecondsSinceEpoch, std::chrono::milliseconds());
+  MOCK_METHOD(std::chrono::milliseconds, millisecondsSinceEpoch, ());
 };
 
 class TestTimeout : public AsyncTimeoutSet::Callback {

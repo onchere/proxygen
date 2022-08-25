@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -197,7 +197,7 @@ class TraceEvent {
   }
 
   void setMetaData(MetaDataMap&& input) {
-    metaData_ = input;
+    metaData_ = std::move(input);
   }
 
   const MetaDataMap& getMetaData() const {

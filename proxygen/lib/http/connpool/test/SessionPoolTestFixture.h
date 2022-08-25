@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -16,12 +16,23 @@
 #include <proxygen/lib/http/session/HTTPUpstreamSession.h>
 #include <proxygen/lib/test/TestAsyncTransport.h>
 
-#include "proxygen/lib/http/connpool/SessionHolder.h"
+#include <proxygen/lib/http/connpool/SessionHolder.h>
 
 namespace proxygen {
 
 folly::SocketAddress local("127.0.0.1", 80);
 folly::SocketAddress peer("127.0.0.1", 12345);
+
+class MockSessionHolderCallback : public SessionHolder::Callback {
+ public:
+  MOCK_METHOD(void, detachIdle, (SessionHolder*), ());
+  MOCK_METHOD(void, detachPartiallyFilled, (SessionHolder*), ());
+  MOCK_METHOD(void, detachFilled, (SessionHolder*), ());
+  MOCK_METHOD(void, attachIdle, (SessionHolder*), ());
+  MOCK_METHOD(void, attachPartiallyFilled, (SessionHolder*), ());
+  MOCK_METHOD(void, attachFilled, (SessionHolder*), ());
+  MOCK_METHOD(void, addDrainingSession, (HTTPSessionBase*), ());
+};
 
 std::unique_ptr<testing::NiceMock<MockHTTPCodec>> makeCodecCommon() {
   static int txnIdx = 1;
@@ -32,7 +43,7 @@ std::unique_ptr<testing::NiceMock<MockHTTPCodec>> makeCodecCommon() {
       .WillRepeatedly(testing::InvokeWithoutArgs([&]() { return txnIdx++; }));
   EXPECT_CALL(*codec, isReusable()).WillRepeatedly(testing::Return(true));
   EXPECT_CALL(*codec, getProtocol())
-      .WillRepeatedly(testing::Return(CodecProtocol::SPDY_3_1));
+      .WillRepeatedly(testing::Return(CodecProtocol::HTTP_2));
   return codec;
 }
 
@@ -52,7 +63,7 @@ std::unique_ptr<testing::NiceMock<MockHTTPCodec>> makeParallelCodec() {
   EXPECT_CALL(*codec, generateRstStream(testing::_, testing::_, testing::_))
       .WillRepeatedly(testing::Return(1));
   EXPECT_CALL(*codec, getProtocol())
-      .WillRepeatedly(testing::Return(CodecProtocol::SPDY_3_1));
+      .WillRepeatedly(testing::Return(CodecProtocol::HTTP_2));
   return codec;
 }
 

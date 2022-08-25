@@ -1,14 +1,14 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-#include "proxygen/lib/http/connpool/SessionPool.h"
-#include "proxygen/lib/http/connpool/ServerIdleSessionController.h"
-#include "proxygen/lib/http/connpool/ThreadIdleSessionController.h"
+#include <proxygen/lib/http/connpool/ServerIdleSessionController.h>
+#include <proxygen/lib/http/connpool/SessionPool.h>
+#include <proxygen/lib/http/connpool/ThreadIdleSessionController.h>
 
 #include <chrono>
 #include <folly/io/async/EventBaseManager.h>

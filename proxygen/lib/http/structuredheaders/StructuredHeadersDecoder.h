@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "StructuredHeadersBuffer.h" // @manual=:structured_headers
+#include <proxygen/lib/http/structuredheaders/StructuredHeadersBuffer.h>
 #include <unordered_map>
 #include <vector>
 

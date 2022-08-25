@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -13,6 +13,7 @@
 #include <folly/io/async/AsyncUDPSocket.h>
 #include <folly/io/async/SSLContext.h>
 #include <proxygen/lib/http/codec/HTTPCodecFilter.h>
+#include <proxygen/lib/http/session/HTTPSessionActivityTracker.h>
 #include <proxygen/lib/http/session/HTTPTransaction.h>
 #include <proxygen/lib/utils/Time.h>
 #include <wangle/acceptor/ManagedConnection.h>
@@ -123,9 +124,17 @@ class HTTPSessionBase : public wangle::ManagedConnection {
                   const WheelTimerInstance& wheelTimer,
                   HTTPCodec::StreamID rootNodeId);
 
-  virtual ~HTTPSessionBase() {
+  virtual ~HTTPSessionBase() override;
+
+  virtual void setHTTPSessionActivityTracker(
+      std::unique_ptr<HTTPSessionActivityTracker> httpSessionActivityTracker) {
+    httpSessionActivityTracker_ = std::move(httpSessionActivityTracker);
   }
 
+  [[nodiscard]] HTTPSessionActivityTracker* getHTTPSessionActivityTracker()
+      const {
+    return httpSessionActivityTracker_.get();
+  }
   /**
    * Set the read buffer limit to be used for all new HTTPSessionBase objects.
    */
@@ -162,9 +171,7 @@ class HTTPSessionBase : public wangle::ManagedConnection {
     return infoCallback_;
   }
 
-  virtual void setSessionStats(HTTPSessionStats* stats) {
-    sessionStats_ = stats;
-  }
+  virtual void setSessionStats(HTTPSessionStats* stats);
 
   virtual HTTPTransaction::Transport::Type getType() const noexcept = 0;
 
@@ -186,7 +193,7 @@ class HTTPSessionBase : public wangle::ManagedConnection {
   /**
    * Returns true iff a new outgoing transaction can be made on this session
    */
-  bool supportsMoreTransactions() const {
+  virtual bool supportsMoreTransactions() const {
     return (getNumOutgoingStreams() < getMaxConcurrentOutgoingStreams());
   }
 
@@ -345,7 +352,8 @@ class HTTPSessionBase : public wangle::ManagedConnection {
   }
 
   std::chrono::seconds getLatestIdleTime() const {
-    DCHECK_GT(transactionSeqNo_, 0) << "No idle time for the first transaction";
+    DCHECK_GT(transactionSeqNo_, 0u)
+        << "No idle time for the first transaction";
     DCHECK(latestActive_ > TimePoint::min());
     return latestIdleDuration_;
   }
@@ -491,8 +499,6 @@ class HTTPSessionBase : public wangle::ManagedConnection {
   bool isExHeadersEnabled() noexcept {
     return exHeadersEnabled_;
   }
-
-  virtual void injectTraceEventIntoAllTransactions(TraceEvent&) = 0;
 
   void setConnectionToken(
       const HTTPTransaction::ConnectionToken& token) noexcept {
@@ -651,6 +657,8 @@ class HTTPSessionBase : public wangle::ManagedConnection {
    * Indicates whether ingress timeout has to be scheduled after EOM is sent.
    */
   bool setIngressTimeoutAfterEom_{false};
+
+  std::unique_ptr<HTTPSessionActivityTracker> httpSessionActivityTracker_;
 
  private:
   // Underlying controller_ is marked as private so that callers must utilize

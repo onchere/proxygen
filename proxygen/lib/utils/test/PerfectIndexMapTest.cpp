@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -94,7 +94,7 @@ typedef testing::Types<
                                        HTTPHeaderCodeCommonOffset,
                                        HTTPCommonHeaders::num_codes>>
     TestTypes;
-TYPED_TEST_CASE(PerfectIndexMapTests, TestTypes);
+TYPED_TEST_SUITE(PerfectIndexMapTests, TestTypes);
 
 TYPED_TEST(PerfectIndexMapTests, BasicKeySetAddRemoveGetSingleOrNone) {
   typedef typename TypeParam::TKey Key;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -346,6 +346,7 @@ class FakeHTTPCodecCallback : public HTTPCodec::Callback {
     recvPingReply = 0;
     windowUpdateCalls = 0;
     settings = 0;
+    numSettings = 0;
     settingsAcks = 0;
     certificateRequests = 0;
     lastCertRequestId = 0;
@@ -469,6 +470,7 @@ HTTPMessage getResponse(uint32_t code, uint32_t bodyLen = 0);
 HTTPMessage getUpgradeRequest(const std::string& upgradeHeader,
                               HTTPMethod method = HTTPMethod::GET,
                               uint32_t bodyLen = 0);
+HTTPMessage getResponseWithInvalidBodyLength();
 
 std::unique_ptr<HTTPMessage> makeGetRequest();
 std::unique_ptr<HTTPMessage> makePostRequest(uint32_t contentLength = 200);

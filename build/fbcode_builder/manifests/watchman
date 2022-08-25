@@ -13,13 +13,14 @@ builder = cmake
 [dependencies]
 boost
 cpptoml
+edencommon
 fb303
 fbthrift
 folly
-pcre
+pcre2
 googletest
 
-[dependencies.fb=on]
+[dependencies.fbsource=on]
 rust
 
 [shipit.pathmap]

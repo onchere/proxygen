@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -8,8 +8,8 @@
 
 #pragma once
 
-#include "proxygen/lib/http/codec/compress/experimental/simulator/CompressionScheme.h"
-#include "proxygen/lib/http/codec/compress/experimental/simulator/CompressionTypes.h"
+#include <proxygen/lib/http/codec/compress/experimental/simulator/CompressionScheme.h>
+#include <proxygen/lib/http/codec/compress/experimental/simulator/CompressionTypes.h>
 
 #include <chrono>
 #include <folly/Random.h>

@@ -1,22 +1,24 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-#include "proxygen/lib/http/connpool/test/SessionPoolTestFixture.h"
+#include <proxygen/lib/http/connpool/test/SessionPoolTestFixture.h>
 
-#include "proxygen/lib/http/connpool/ServerIdleSessionController.h"
-#include "proxygen/lib/http/connpool/SessionHolder.h"
-#include "proxygen/lib/http/connpool/SessionPool.h"
-#include "proxygen/lib/http/connpool/ThreadIdleSessionController.h"
+#include <proxygen/lib/http/connpool/ServerIdleSessionController.h>
+#include <proxygen/lib/http/connpool/SessionHolder.h>
+#include <proxygen/lib/http/connpool/SessionPool.h>
+#include <proxygen/lib/http/connpool/ThreadIdleSessionController.h>
 
 #include <folly/io/async/EventBaseManager.h>
 #include <folly/portability/GFlags.h>
 #include <folly/synchronization/Baton.h>
 #include <wangle/acceptor/ConnectionManager.h>
+
+#include <proxygen/lib/http/session/test/HQSessionMocks.h>
 
 using namespace proxygen;
 using namespace std;
@@ -29,14 +31,16 @@ TEST_F(SessionPoolFixture, ParallelPoolChangedMaxSessions) {
   EXPECT_CALL(*codec, setCallback(_)).WillRepeatedly(SaveArg<0>(&cb));
   p.putSession(makeSession(std::move(codec)));
 
+  // inserted session should be in IDLE state
   EXPECT_EQ(p.getNumSessions(), 1);
+  EXPECT_EQ(p.getNumIdleSessions(), 1);
+
+  // blocked on opening streams should transition the session to filled state
   cb->onSettings({{SettingsId::MAX_CONCURRENT_STREAMS, 0}});
   evb_.loop();
-  EXPECT_EQ(p.getNumSessions(), 0);
 
-  // Clear the pool
-  p.setMaxIdleSessions(0);
-  evb_.loop();
+  EXPECT_EQ(p.getNumSessions(), 1);
+  EXPECT_EQ(p.getNumFullSessions(), 1);
 }
 
 TEST_F(SessionPoolFixture, SerialPoolBasic) {
@@ -400,7 +404,7 @@ TEST_F(SessionPoolFixture, CloseNotReusable) {
   EXPECT_CALL(*codec, isReusable()).WillRepeatedly(ReturnPointee(&reusable));
   EXPECT_CALL(*codec, supportsParallelRequests()).WillRepeatedly(Return(false));
   EXPECT_CALL(*codec, getProtocol())
-      .WillRepeatedly(Return(CodecProtocol::SPDY_3_1));
+      .WillRepeatedly(Return(CodecProtocol::HTTP_2));
 
   p.putSession(makeSession(std::move(codec)));
   ASSERT_EQ(p.getNumSessions(), 1);
@@ -520,6 +524,10 @@ TEST_F(SessionPoolFixture, MoveIdleSessionBetweenThreadsTest) {
     evb_.loopForever();
   });
 
+  // Wait for t1 to start before starting t2
+  // to ensure it is picked by popBestIdlePool()
+  t1InitBaton.wait();
+
   folly::EventBase evb2;
   std::thread t2([&] {
     folly::EventBaseManager::get()->setEventBase(&evb2, false);
@@ -533,7 +541,6 @@ TEST_F(SessionPoolFixture, MoveIdleSessionBetweenThreadsTest) {
     evb2.loopForever();
   });
 
-  t1InitBaton.wait();
   t2InitBaton.wait();
   // Simulate thread2 asking thread1 for an idle session
   evb2.runInEventBaseThread([&] {
@@ -714,6 +721,17 @@ TEST_F(SessionPoolFixture, ThreadIdleSessionControllerTrackSessionPoolChanges) {
   EXPECT_EQ(controller.getTotalIdleSessions(), 2);
   EXPECT_EQ(p1.getNumIdleSessions(), 1);
   EXPECT_EQ(p2.getNumIdleSessions(), 1);
+}
+
+TEST_F(SessionPoolFixture, DescribeWithNullTransport) {
+  MockHQSession session;
+  MockSessionHolderCallback cb;
+  SessionHolder sessionHolder(&session, &cb);
+
+  // This should not crash.
+  LOG(INFO) << sessionHolder;
+  // This is to appease mock session destructor.
+  session.setInfoCallback(nullptr);
 }
 
 // So we can have -v work

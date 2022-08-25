@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -96,9 +96,9 @@ TEST(SecondaryAuthManagerTest, Authenticator) {
             SignatureScheme::ecdsa_secp256r1_sha256};
         return schemes;
       }));
-  EXPECT_CALL(fizzBase, getEkm(_, _, _)).WillRepeatedly(InvokeWithoutArgs([]() {
-    return folly::IOBuf::copyBuffer("exportedmaterial");
-  }));
+  EXPECT_CALL(fizzBase, _getExportedKeyingMaterial(_, _, _))
+      .WillRepeatedly(InvokeWithoutArgs(
+          []() { return folly::IOBuf::copyBuffer("exportedmaterial"); }));
   auto authenticatorPair =
       authManager.getAuthenticator(fizzBase,
                                    TransportDirection::UPSTREAM,

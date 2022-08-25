@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -12,7 +12,7 @@
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 
-#include "proxygen/lib/stats/ResourceData.h"
+#include <proxygen/lib/stats/ResourceData.h>
 
 using namespace proxygen;
 
@@ -22,7 +22,7 @@ using namespace proxygen;
  */
 class MockResources : public Resources {
  public:
-  MOCK_METHOD0(getCurrentData, ResourceData());
+  MOCK_METHOD(ResourceData, getCurrentData, ());
 
   void expectNextCallsToReturnValue(const ResourceData& data, uint64_t times) {
     EXPECT_CALL(*this, getCurrentData())

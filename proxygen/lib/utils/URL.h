@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -10,6 +10,7 @@
 
 #include <sstream>
 
+#include <folly/portability/Windows.h> // for windows compatibility: STRICT maybe defined by some win headers
 #include <proxygen/lib/utils/ParseURL.h>
 
 namespace proxygen {
@@ -20,11 +21,21 @@ namespace proxygen {
 
 class URL {
  public:
-  explicit URL(const std::string& url = "", bool secure = false) noexcept {
+  URL() = default;
+
+  enum class Mode { STRICT_COMPAT, STRICT };
+  explicit URL(folly::StringPiece url,
+               bool secure = false,
+               Mode strict = Mode::STRICT_COMPAT) noexcept
+      : URL(ParseURL::parseURLMaybeInvalid(url, strict == Mode::STRICT),
+            secure,
+            strict) {
+  }
+
+  explicit URL(ParseURL parseUrl,
+               bool secure = false,
+               Mode strict = Mode::STRICT_COMPAT) noexcept {
     valid_ = false;
-
-    ParseURL parseUrl(url);
-
     scheme_ = parseUrl.scheme().str();
     host_ = parseUrl.hostNoBrackets().str();
     path_ = parseUrl.path().str();
@@ -39,6 +50,12 @@ class URL {
     } else {
       port_ = isSecure() ? 443 : 80;
     }
+
+    if (strict == Mode::STRICT) {
+      valid_ &= parseUrl.valid();
+    }
+    // TODO: In STRICT_COMPAT, parseUrl.valid() is not checked, so URL.valid()
+    // can be true so long as the scheme is http(s).
   }
 
   static std::string createUrl(const std::string& scheme,
@@ -107,6 +124,13 @@ class URL {
 
   std::string getHostAndPort() const noexcept {
     return port_ ? folly::to<std::string>(host_, ":", port_) : host_;
+  }
+
+  std::string getHostAndPortOmitDefault() const noexcept {
+    return port_ && ((isSecure() && port_ != 443) ||
+                     (!isSecure() && port_ != 80))
+               ? folly::to<std::string>(host_, ":", port_)
+               : host_;
   }
 
   const std::string& getPath() const noexcept {

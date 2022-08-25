@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -39,9 +39,9 @@ TEST(HTTPTimeTests, EqualTimeTest) {
 }
 
 TEST(HTTPTimeTests, ReallyOldTimeTest) {
-  auto a = parseHTTPDateTime("Thu, 07 Mar 1770 08:49:37 GMT");
+  auto a = parseHTTPDateTime("Thu, 07 Mar 1970 08:49:37 GMT");
   EXPECT_TRUE(a.has_value());
-  auto b = parseHTTPDateTime("Thu, 07 Mar 1771 08:49:37 GMT");
+  auto b = parseHTTPDateTime("Thu, 07 Mar 1971 08:49:37 GMT");
   EXPECT_TRUE(b.has_value());
   auto c = parseHTTPDateTime("Thu, 07 Mar 1980 08:49:37 GMT");
   EXPECT_TRUE(c.has_value());

@@ -1,16 +1,16 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-#include "StructuredHeadersUtilities.h"
-#include "StructuredHeadersConstants.h"
 #include <cctype>
+#include <proxygen/lib/http/structuredheaders/StructuredHeadersConstants.h>
+#include <proxygen/lib/http/structuredheaders/StructuredHeadersUtilities.h>
 
-#include "proxygen/lib/utils/Base64.h"
+#include <proxygen/lib/utils/Base64.h>
 
 namespace proxygen { namespace StructuredHeaders {
 

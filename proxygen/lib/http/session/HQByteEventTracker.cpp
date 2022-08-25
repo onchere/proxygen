@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -51,17 +51,29 @@ void HQByteEventTracker::onByteEventWrittenToSocket(const ByteEvent& event) {
   const auto& streamOffset = event.getByteOffset();
   switch (event.eventType_) {
     case ByteEvent::FIRST_BYTE:
+      FOLLY_FALLTHROUGH;
     case ByteEvent::LAST_BYTE: {
       // install TX callback
       {
-        auto cb = new HQTransportByteEvent(streamOffset, event.eventType_, txn);
+        auto cb = new HQTransportByteEvent(
+            streamOffset, event.eventType_, txn, nullptr);
         auto ret = socket_->registerTxCallback(streamId_, streamOffset, cb);
         if (ret.hasError()) {
           // failed to install callback; destroy
           delete cb;
         }
       }
-      // TODO(bschlinker): install ACK/delivery callbacks here
+      // install ACK callback
+      {
+        auto cb = new HQTransportByteEvent(
+            streamOffset, event.eventType_, txn, nullptr);
+        auto ret =
+            socket_->registerDeliveryCallback(streamId_, streamOffset, cb);
+        if (ret.hasError()) {
+          // failed to install callback; destroy
+          delete cb;
+        }
+      }
       break;
     }
     default:

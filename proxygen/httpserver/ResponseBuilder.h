@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -166,7 +166,8 @@ class ResponseBuilder {
 
     if (body_) {
       if (chunked) {
-        txn_->sendChunkHeader(body_->computeChainDataLength());
+        auto bodyLength = body_->computeChainDataLength();
+        txn_->sendChunkHeader(bodyLength);
         txn_->sendBody(std::move(body_));
         txn_->sendChunkTerminator();
       } else {

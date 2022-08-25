@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -59,10 +59,18 @@ proxygen::ErrorCode hqToHttpErrorCode(HTTP3::ErrorCode err) {
 
 ProxygenError toProxygenError(quic::QuicErrorCode error, bool fromPeer) {
   switch (error.type()) {
-    case quic::QuicErrorCode::Type::ApplicationErrorCode:
-      return (isQPACKError(HTTP3::ErrorCode(*error.asApplicationErrorCode()))
-                  ? kErrorBadDecompress
-                  : (fromPeer ? kErrorConnectionReset : kErrorConnection));
+    case quic::QuicErrorCode::Type::ApplicationErrorCode: {
+      auto h3error = HTTP3::ErrorCode(*error.asApplicationErrorCode());
+      if (h3error == HTTP3::HTTP_NO_ERROR) {
+        return kErrorNone;
+      } else if (isQPACKError(h3error)) {
+        return kErrorBadDecompress;
+      } else if (fromPeer) {
+        return kErrorConnectionReset;
+      } else {
+        return kErrorConnection;
+      }
+    }
     case quic::QuicErrorCode::Type::LocalErrorCode:
       return kErrorShutdown;
     case quic::QuicErrorCode::Type::TransportErrorCode:

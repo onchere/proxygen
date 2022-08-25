@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -37,8 +37,11 @@ class HQConnector : public HQSession::ConnectCallback {
   };
 
   explicit HQConnector(Callback* callback,
-                       std::chrono::milliseconds transactionTimeout)
-      : cb_(CHECK_NOTNULL(callback)), transactionTimeout_(transactionTimeout) {
+                       std::chrono::milliseconds transactionTimeout,
+                       bool useConnectionEndWithErrorCallback = false)
+      : cb_(CHECK_NOTNULL(callback)),
+        transactionTimeout_(transactionTimeout),
+        useConnectionEndWithErrorCallback_(useConnectionEndWithErrorCallback) {
   }
 
   ~HQConnector() override {
@@ -74,8 +77,7 @@ class HQConnector : public HQSession::ConnectCallback {
 
   // HQSession::ConnectCallback
   void onReplaySafe() noexcept override;
-  void connectError(
-      std::pair<quic::QuicErrorCode, std::string> error) noexcept override;
+  void connectError(quic::QuicError error) noexcept override;
 
  private:
   Callback* cb_;
@@ -84,6 +86,7 @@ class HQConnector : public HQSession::ConnectCallback {
   HQUpstreamSession* session_{nullptr};
   quic::TransportSettings transportSettings_;
   std::shared_ptr<quic::QuicPskCache> quicPskCache_;
+  bool useConnectionEndWithErrorCallback_{false};
 };
 
 } // namespace proxygen

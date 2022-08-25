@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -18,7 +18,11 @@ class HTTPMessage;
 
 class HeaderDecodeInfo {
  public:
-  void init(bool isRequestIn, bool isRequestTrailers, bool validate = true) {
+  void init(bool isRequestIn,
+            bool isRequestTrailers,
+            bool validate,
+            bool strictValidation,
+            bool allowEmptyPath) {
     CHECK(!msg);
     msg.reset(new HTTPMessage());
     isRequest_ = isRequestIn;
@@ -28,8 +32,11 @@ class HeaderDecodeInfo {
     contentLength_ = folly::none;
     regularHeaderSeen_ = false;
     pseudoHeaderSeen_ = false;
-    parsingError = "";
+    parsingError.clear();
+    headerErrorValue.clear();
     decodeError = HPACK::DecodeError::NONE;
+    strictValidation_ = strictValidation;
+    allowEmptyPath_ = allowEmptyPath;
     verifier.reset(msg.get());
   }
 
@@ -44,6 +51,7 @@ class HeaderDecodeInfo {
   std::unique_ptr<HTTPMessage> msg;
   HTTPRequestVerifier verifier;
   std::string parsingError;
+  std::string headerErrorValue;
   HPACK::DecodeError decodeError{HPACK::DecodeError::NONE};
 
  private:
@@ -53,7 +61,9 @@ class HeaderDecodeInfo {
   bool hasStatus_{false};
   bool regularHeaderSeen_{false};
   bool pseudoHeaderSeen_{false};
-
+  // Default to false for now to match existing behavior
+  bool strictValidation_{false};
+  bool allowEmptyPath_{false};
   folly::Optional<uint32_t> contentLength_;
 };
 

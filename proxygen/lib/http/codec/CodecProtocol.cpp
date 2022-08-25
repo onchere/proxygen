@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -20,20 +20,15 @@ namespace proxygen {
 
 namespace {
 static const std::string http_1_1 = "http/1.1";
-static const std::string spdy_3 = "spdy/3";
-static const std::string spdy_3_1 = "spdy/3.1";
 static const std::string http_2 = "http/2";
 static const std::string hq = "hq";
 static const std::string h3 = "h3";
+static const std::string http_binary = "bhttp";
 static const std::string empty = "";
 
 extern CodecProtocol getCodecProtocolFromStr(folly::StringPiece protocolStr) {
   if (protocolStr == http_1_1) {
     return CodecProtocol::HTTP_1_1;
-  } else if (protocolStr == spdy_3) {
-    return CodecProtocol::SPDY_3;
-  } else if (protocolStr == spdy_3_1) {
-    return CodecProtocol::SPDY_3_1;
   } else if (protocolStr == http_2 || protocolStr == http2::kProtocolString ||
              protocolStr == http2::kProtocolCleartextString) {
     return CodecProtocol::HTTP_2;
@@ -41,6 +36,8 @@ extern CodecProtocol getCodecProtocolFromStr(folly::StringPiece protocolStr) {
     return CodecProtocol::HQ;
   } else if (protocolStr.find(h3) == 0) {
     return CodecProtocol::HTTP_3;
+  } else if (protocolStr.find(http_binary) == 0) {
+    return CodecProtocol::HTTP_BINARY;
   } else {
     // return default protocol
     return CodecProtocol::HTTP_1_1;
@@ -53,35 +50,28 @@ extern const std::string& getCodecProtocolString(CodecProtocol proto) {
   switch (proto) {
     case CodecProtocol::HTTP_1_1:
       return http_1_1;
-    case CodecProtocol::SPDY_3:
-      return spdy_3;
-    case CodecProtocol::SPDY_3_1:
-      return spdy_3_1;
     case CodecProtocol::HTTP_2:
       return http_2;
     case CodecProtocol::HTTP_3:
       return h3;
     case CodecProtocol::HQ:
       return hq;
+    case CodecProtocol::HTTP_BINARY:
+      return http_binary;
   }
   LOG(FATAL) << "Unreachable";
   return empty;
 }
 
 extern bool isValidCodecProtocolStr(const std::string& protocolStr) {
-  return protocolStr == http_1_1 || protocolStr == spdy_3 ||
-         protocolStr == spdy_3_1 || protocolStr == http2::kProtocolString ||
+  return protocolStr == http_1_1 || protocolStr == http2::kProtocolString ||
          protocolStr == http2::kProtocolCleartextString ||
-         protocolStr == http_2 || protocolStr == hq;
+         protocolStr == http_2 || protocolStr == hq ||
+         protocolStr == http_binary;
 }
 
 extern CodecProtocol getCodecProtocolFromStr(const std::string& protocolStr) {
   return getCodecProtocolFromStr(folly::StringPiece(protocolStr));
-}
-
-extern bool isSpdyCodecProtocol(CodecProtocol protocol) {
-  return protocol == CodecProtocol::SPDY_3 ||
-         protocol == CodecProtocol::SPDY_3_1;
 }
 
 extern bool isHTTP2CodecProtocol(CodecProtocol protocol) {
@@ -92,8 +82,12 @@ extern bool isHQCodecProtocol(CodecProtocol protocol) {
   return protocol == CodecProtocol::HQ;
 }
 
+extern bool isHTTPBinaryCodecProtocol(CodecProtocol protocol) {
+  return protocol == CodecProtocol::HTTP_BINARY;
+}
+
 extern bool isParallelCodecProtocol(CodecProtocol protocol) {
-  return isSpdyCodecProtocol(protocol) || isHTTP2CodecProtocol(protocol);
+  return isHTTP2CodecProtocol(protocol);
 }
 
 extern folly::Optional<std::pair<CodecProtocol, std::string>>

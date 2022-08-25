@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -29,16 +29,16 @@
 #include <quic/fizz/client/handshake/FizzClientQuicHandshakeContext.h>
 #include <quic/logging/FileQLogger.h>
 
-namespace quic { namespace samples {
+namespace quic::samples {
 
-HQClient::HQClient(const HQParams& params) : params_(params) {
+HQClient::HQClient(const HQToolClientParams& params) : params_(params) {
   if (params_.transportSettings.pacingEnabled) {
     pacingTimer_ = TimerHighRes::newTimer(
         &evb_, params_.transportSettings.pacingTimerTickInterval);
   }
 }
 
-void HQClient::start() {
+int HQClient::start() {
 
   initializeQuicClient();
   initializeQLogger();
@@ -60,7 +60,7 @@ void HQClient::start() {
 
   LOG(INFO) << "HQClient connecting to " << params_.remoteAddress->describe();
   session_->startNow();
-  quicClient_->start(session_);
+  quicClient_->start(session_, session_);
 
   // This is to flush the CFIN out so the server will see the handshake as
   // complete.
@@ -71,6 +71,8 @@ void HQClient::start() {
     sendRequests(true, quicClient_->getNumOpenableBidirectionalStreams());
   }
   evb_.loop();
+
+  return failed_ ? -1 : 0;
 }
 
 proxygen::HTTPTransaction* FOLLY_NULLABLE
@@ -116,15 +118,29 @@ HQClient::sendRequest(const proxygen::URL& requestUrl) {
 
 void HQClient::sendRequests(bool closeSession, uint64_t numOpenableStreams) {
   VLOG(10) << "http-version:" << params_.httpVersion;
-  while (!httpPaths_.empty() && numOpenableStreams > 0) {
+  do {
     proxygen::URL requestUrl(httpPaths_.front().str(), /*secure=*/true);
     sendRequest(requestUrl);
     httpPaths_.pop_front();
     numOpenableStreams--;
-  }
+  } while (!params_.sendRequestsSequentially && !httpPaths_.empty() &&
+           numOpenableStreams > 0);
   if (closeSession && httpPaths_.empty()) {
     session_->drain();
     session_->closeWhenIdle();
+  }
+  // If there are still pending requests to be sent sequentially, schedule a
+  // callback on the first EOM to try to make one more request. That callback
+  // will keep scheduling itself until there are no more requests.
+  if (params_.sendRequestsSequentially && !httpPaths_.empty()) {
+    auto sendOneMoreRequest = [&]() {
+      uint64_t numOpenable = quicClient_->getNumOpenableBidirectionalStreams();
+      if (numOpenable > 0) {
+        sendRequests(true, numOpenable);
+      };
+    };
+    CHECK(!curls_.empty());
+    curls_.back()->setEOMFunc(sendOneMoreRequest);
   }
 }
 static std::function<void()> selfSchedulingRequestRunner;
@@ -139,10 +155,10 @@ void HQClient::connectSuccess() {
   httpPaths_.insert(
       httpPaths_.end(), params_.httpPaths.begin(), params_.httpPaths.end());
   sendRequests(!params_.migrateClient, numOpenableStreams);
-  // If there are still pending requests, schedule a callback on the first EOM
-  // to try to make some more. That callback will keep scheduling itself until
-  // there are no more requests.
-  if (!httpPaths_.empty()) {
+  // If there are still pending requests to be send in parallel, schedule a
+  // callback on the first EOM to try to make some more. That callback will keep
+  // scheduling itself until there are no more requests.
+  if (!params_.sendRequestsSequentially && !httpPaths_.empty()) {
     selfSchedulingRequestRunner = [&]() {
       uint64_t numOpenable = quicClient_->getNumOpenableBidirectionalStreams();
       if (numOpenable > 0) {
@@ -184,9 +200,10 @@ void HQClient::onReplaySafe() {
   evb_.terminateLoopSoon();
 }
 
-void HQClient::connectError(std::pair<quic::QuicErrorCode, std::string> error) {
-  LOG(ERROR) << "HQClient failed to connect, error=" << toString(error.first)
-             << ", msg=" << error.second;
+void HQClient::connectError(quic::QuicError error) {
+  LOG(ERROR) << "HQClient failed to connect, error=" << toString(error.code)
+             << ", msg=" << error.message;
+  failed_ = true;
   evb_.terminateLoopSoon();
 }
 
@@ -196,7 +213,8 @@ void HQClient::initializeQuicClient() {
       &evb_,
       std::move(sock),
       quic::FizzClientQuicHandshakeContext::Builder()
-          .setFizzClientContext(createFizzClientContext(params_))
+          .setFizzClientContext(
+              createFizzClientContext(params_, params_.earlyData))
           .setCertificateVerifier(
               std::make_unique<
                   proxygen::InsecureVerifierDangerousDoNotUseInProduction>())
@@ -231,9 +249,9 @@ void HQClient::initializeQLogger() {
   quicClient_->setQLogger(std::move(qLogger));
 }
 
-void startClient(const HQParams& params) {
+int startClient(const HQToolClientParams& params) {
   HQClient client(params);
-  client.start();
+  return client.start();
 }
 
-}} // namespace quic::samples
+} // namespace quic::samples

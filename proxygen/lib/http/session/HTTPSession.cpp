@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -100,10 +100,9 @@ HTTPSession::HTTPSession(const WheelTimerInstance& wheelTimer,
       ingressUpgraded_(false),
       resetSocketOnShutdown_(false),
       inLoopCallback_(false),
-      inResume_(false),
       pendingPause_(false),
       writeBufSplit_(false) {
-  byteEventTracker_ = std::make_shared<ByteEventTracker>(this);
+  setByteEventTracker(std::make_shared<ByteEventTracker>(this));
   initialReceiveWindow_ = receiveStreamWindowSize_ = receiveSessionWindowSize_ =
       codec_->getDefaultWindowSize();
 
@@ -142,7 +141,7 @@ uint32_t HTTPSession::getCertAuthSettingVal() {
   }
   auto fizzBase = getTransport()->getUnderlyingTransport<AsyncFizzBase>();
   if (fizzBase) {
-    ekm = fizzBase->getEkm(label, nullptr, settingLen);
+    ekm = fizzBase->getExportedKeyingMaterial(label, nullptr, settingLen);
   } else {
     VLOG(4) << "Underlying transport does not support secondary "
                "authentication.";
@@ -168,7 +167,7 @@ bool HTTPSession::verifyCertAuthSetting(uint32_t value) {
   }
   auto fizzBase = getTransport()->getUnderlyingTransport<AsyncFizzBase>();
   if (fizzBase) {
-    ekm = fizzBase->getEkm(label, nullptr, settingLen);
+    ekm = fizzBase->getExportedKeyingMaterial(label, nullptr, settingLen);
   } else {
     VLOG(4) << "Underlying transport does not support secondary "
                "authentication.";
@@ -262,6 +261,11 @@ void HTTPSession::startNow() {
   // util we've started and sent SETTINGS.
   if (draining_) {
     codec_->generateGoaway(writeBuf_);
+    auto controller = getController();
+    if (controller && codec_->isWaitingToDrain()) {
+      wheelTimer_.scheduleTimeout(&drainTimeout_,
+                                  controller->getGracefulShutdownTimeout());
+    }
   }
   scheduleWrite();
   resumeReads();
@@ -337,11 +341,6 @@ void HTTPSession::readTimeoutExpired() noexcept {
   DestructorGuard g(this);
   setCloseReason(ConnectionCloseReason::TIMEOUT);
   notifyPendingShutdown();
-  auto controller = getController();
-  if (controller && codec_->isWaitingToDrain()) {
-    wheelTimer_.scheduleTimeout(&drainTimeout_,
-                                controller->getGracefulShutdownTimeout());
-  }
 }
 
 void HTTPSession::writeTimeoutExpired() noexcept {
@@ -902,6 +901,9 @@ void HTTPSession::onHeadersComplete(HTTPCodec::StreamID streamID,
   // Tell the Transaction to start processing the message now
   // that the full ingress headers have arrived.
   txn->onIngressHeadersComplete(std::move(msg));
+  if (httpSessionActivityTracker_) {
+    httpSessionActivityTracker_->reportActivity();
+  }
 }
 
 void HTTPSession::onBody(HTTPCodec::StreamID streamID,
@@ -1149,57 +1151,38 @@ void HTTPSession::onGoaway(uint64_t lastGoodStreamID,
   // Abort transactions which have been initiated but not created
   // successfully at the remote end. Upstream transactions are created
   // with odd transaction IDs and downstream transactions with even IDs.
-  std::vector<HTTPCodec::StreamID> ids;
-  auto firstStream = HTTPCodec::NoStream;
+  std::vector<HTTPCodec::StreamID> refusedIds;
+  std::vector<HTTPCodec::StreamID> errorIds;
+  std::vector<HTTPCodec::StreamID> pubSubControlIds;
 
   for (const auto& id : transactionIds_) {
     if (((bool)(id & 0x01) == isUpstream()) && (id > lastGoodStreamID)) {
-      if (firstStream == HTTPCodec::NoStream) {
-        // transactions_ is a set so it should be sorted by stream id.
-        // We will defer adding the firstStream to the id list until
-        // we can determine whether we have a codec error code.
-        firstStream = id;
-        continue;
-      }
-
-      ids.push_back(id);
+      refusedIds.push_back(id);
+    } else if (code != ErrorCode::NO_ERROR) {
+      // Error goaway -> error all streams
+      errorIds.push_back(id);
+    } else if (lastGoodStreamID < http2::kMaxStreamID &&
+               (controlStreamIds_.find(id) != controlStreamIds_.end())) {
+      // Final (non-error) goaway -> error control streams
+      pubSubControlIds.push_back(id);
     }
   }
+  errorOnTransactionIds(refusedIds, kErrorStreamUnacknowledged);
 
-  if (firstStream != HTTPCodec::NoStream && code != ErrorCode::NO_ERROR) {
-    // If we get a codec error, we will attempt to blame the first stream
-    // by delivering a specific error to it and let the rest of the streams
-    // get a normal unacknowledged stream error.
-    ProxygenError err = kErrorStreamUnacknowledged;
-    string debugInfo = (debugData) ? folly::to<string>(" with debug info: ",
-                                                       (char*)debugData->data())
-                                   : "";
-    HTTPException ex(HTTPException::Direction::INGRESS_AND_EGRESS,
-                     folly::to<std::string>(getErrorString(err),
-                                            " on transaction id: ",
-                                            *firstStream,
-                                            " with codec error: ",
-                                            getErrorCodeString(code),
-                                            debugInfo));
-    ex.setProxygenError(err);
-    errorOnTransactionId(*firstStream, std::move(ex));
-  } else if (firstStream != HTTPCodec::NoStream) {
-    ids.push_back(*firstStream);
-  }
-
-  errorOnTransactionIds(ids, kErrorStreamUnacknowledged);
-
-  // Control stream is a long lived stream, if we gracefully shut down without
-  // notifying it, the client might believe a control stream is still valid and
-  // continue sending us ExStream, which will lead to stream abort issue.
-  std::vector<HTTPCodec::StreamID> csToBeAborted;
-  for (auto const& csId : controlStreamIds_) {
-    if (std::find(ids.begin(), ids.end(), csId) == ids.end() &&
-        csId != firstStream) {
-      csToBeAborted.emplace_back(csId);
+  if (code != ErrorCode::NO_ERROR) {
+    string debugStr;
+    if (debugData) {
+      debugData->coalesce();
+      debugStr = debugData->moveToFbString();
     }
+    auto msg = folly::to<std::string>("GOAWAY error with codec error: ",
+                                      getErrorCodeString(code),
+                                      " with debug info: ",
+                                      debugStr);
+    errorOnTransactionIds(errorIds, kErrorConnectionReset, msg);
   }
-  errorOnTransactionIds(csToBeAborted, kErrorStreamAbort);
+
+  errorOnTransactionIds(pubSubControlIds, kErrorStreamAbort);
 }
 
 void HTTPSession::onPingRequest(uint64_t data) {
@@ -1556,9 +1539,10 @@ void HTTPSession::sendHeaders(HTTPTransaction* txn,
                               bool includeEOM) noexcept {
   CHECK(started_);
   unique_ptr<IOBuf> goawayBuf;
-  if (shouldShutdown()) {
+  if (draining_ && isUpstream() && codec_->isReusable() &&
+      allTransactionsStarted()) {
     // For HTTP/1.1, add Connection: close
-    // For SPDY, save the goaway for AFTER the request
+    // For SPDY/H2, save the goaway for AFTER the request
     auto writeBuf = writeBuf_.move();
     drainImpl();
     goawayBuf = writeBuf_.move();
@@ -1646,6 +1630,10 @@ size_t HTTPSession::sendBody(HTTPTransaction* txn,
                                             includeEOM);
   CHECK(inLoopCallback_);
   bodyBytesPerWriteBuf_ += bodyLen;
+  if (httpSessionActivityTracker_) {
+    httpSessionActivityTracker_->addTrackedEgressByteEvent(
+        offset, encodedSize, byteEventTracker_.get(), txn);
+  }
   if (encodedSize > 0 && !txn->testAndSetFirstByteSent() && byteEventTracker_) {
     byteEventTracker_->addFirstBodyByteEvent(offset + 1, txn);
   }
@@ -2087,8 +2075,7 @@ unique_ptr<IOBuf> HTTPSession::getNextToSend(bool* cork,
       }
       toSend = std::min(toSend, connFlowControl_->getAvailableSend());
     }
-    txnEgressQueue_.nextEgress(nextEgressResults_,
-                               isSpdyCodecProtocol(codec_->getProtocol()));
+    txnEgressQueue_.nextEgress(nextEgressResults_, false);
     CHECK(!nextEgressResults_.empty()); // Queue was non empty, so this must be
     // The maximum we will send for any transaction in this loop
     uint32_t txnMaxToSend = toSend * nextEgressResults_.front().second;
@@ -2283,7 +2270,8 @@ void HTTPSession::updateWriteCount() {
 
 void HTTPSession::shutdownTransport(bool shutdownReads,
                                     bool shutdownWrites,
-                                    const std::string& errorMsg) {
+                                    const std::string& errorMsg,
+                                    ProxygenError error) {
   DestructorGuard guard(this);
 
   // shutdowns not accounted for, shouldn't see any
@@ -2296,7 +2284,6 @@ void HTTPSession::shutdownTransport(bool shutdownReads,
   bool notifyEgressShutdown = false;
   bool notifyIngressShutdown = false;
 
-  ProxygenError error;
   if (!transportInfo_.sslError.empty()) {
     error = kErrorSSL;
   } else if (sock_->error()) {
@@ -2310,8 +2297,6 @@ void HTTPSession::shutdownTransport(bool shutdownReads,
     shutdownWrites = true;
   } else if (getConnectionCloseReason() == ConnectionCloseReason::TIMEOUT) {
     error = kErrorTimeout;
-  } else {
-    error = kErrorEOF;
   }
 
   if (shutdownReads && !shutdownWrites && flowControlTimeout_.isScheduled()) {
@@ -2354,7 +2339,7 @@ void HTTPSession::shutdownTransport(bool shutdownReads,
     // TODO: send an RST if readBuf_ is non empty?
     shutdownRead();
     if (!transactions_.empty() && error == kErrorConnectionReset) {
-      if (infoCallback_ != nullptr) {
+      if (infoCallback_) {
         infoCallback_->onIngressError(*this, error);
       }
     } else if (error == kErrorEOF) {
@@ -2505,6 +2490,11 @@ void HTTPSession::drainImpl() {
   if (started_) {
     if (codec_->generateGoaway(writeBuf_) > 0) {
       scheduleWrite();
+    }
+    auto controller = getController();
+    if (controller && codec_->isWaitingToDrain()) {
+      wheelTimer_.scheduleTimeout(&drainTimeout_,
+                                  controller->getGracefulShutdownTimeout());
     }
   }
 }
@@ -2854,7 +2844,11 @@ void HTTPSession::onSessionParseError(const HTTPException& error) {
     dropConnection();
   } else {
     setCloseReason(ConnectionCloseReason::SESSION_PARSE_ERROR);
-    shutdownTransport(true, true);
+    shutdownTransport(true,
+                      true,
+                      "",
+                      error.hasProxygenError() ? error.getProxygenError()
+                                               : kErrorMalformedInput);
   }
 }
 
@@ -3074,16 +3068,6 @@ void HTTPSession::invokeOnAllTransactions(
       fn(txn);
     }
   }
-}
-
-void HTTPSession::injectTraceEventIntoAllTransactions(TraceEvent& event) {
-  invokeOnAllTransactions([event](HTTPTransaction* txn) mutable {
-    HTTPTransactionHandler* handler = txn->getHandler();
-    if (handler != nullptr) {
-      ;
-      handler->traceEventAvailable(event);
-    }
-  });
 }
 
 } // namespace proxygen

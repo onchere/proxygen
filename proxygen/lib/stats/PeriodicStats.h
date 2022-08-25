@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -128,7 +128,7 @@ class PeriodicStats {
    */
   virtual const T& getCurrentData() const {
     {
-      folly::rcu_reader guard;
+      std::scoped_lock guard(folly::rcu_default_domain());
       auto* loadedData = data_.load();
       if (loadedData->getLastUpdateTime() != tlData_->getLastUpdateTime()) {
         // Should be fine using the default assignment operator the compiler
@@ -163,7 +163,7 @@ class PeriodicStats {
   void modifyData(T* newData, bool sync = false) {
     auto* oldData = data_.exchange(newData);
     if (sync) {
-      folly::synchronize_rcu();
+      folly::rcu_synchronize();
       delete oldData;
     } else {
       folly::rcu_retire(oldData);

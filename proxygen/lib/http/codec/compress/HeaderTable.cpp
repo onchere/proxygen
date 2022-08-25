@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -124,8 +124,8 @@ uint32_t HeaderTable::removeLast() {
   const auto& header = table_[t];
   uint32_t headerBytes = header.bytes();
   bytes_ -= headerBytes;
-  VLOG(10) << "Removing local idx=" << t << " name=" << header.name
-           << " value=" << header.value;
+  DVLOG(10) << "Removing local idx=" << t << " name=" << header.name
+            << " value=" << header.value;
   --size_;
   return headerBytes;
 }

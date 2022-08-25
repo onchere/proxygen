@@ -1,12 +1,12 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-#include "proxygen/lib/http/connpool/SessionHolder.h"
+#include <proxygen/lib/http/connpool/SessionHolder.h>
 
 #include <folly/Random.h>
 #include <folly/io/async/AsyncSocket.h>
@@ -140,15 +140,16 @@ void SessionHolder::link() {
   }
   lastUseTime_ = std::chrono::steady_clock::now();
   auto curTxnCount = session_->getNumOutgoingStreams();
-  if (curTxnCount == 0 && session_->isDetachable(/*checkSocket=*/false)) {
-    state_ = ListState::IDLE;
-    parent_->attachIdle(this);
-  } else if (curTxnCount < session_->getMaxConcurrentOutgoingStreams()) {
-    state_ = ListState::PARTIAL;
-    parent_->attachPartiallyFilled(this);
-  } else {
+  if (!session_->supportsMoreTransactions()) {
     state_ = ListState::FULL;
     parent_->attachFilled(this);
+  } else if (curTxnCount == 0 &&
+             session_->isDetachable(/*checkSocket=*/false)) {
+    state_ = ListState::IDLE;
+    parent_->attachIdle(this);
+  } else {
+    state_ = ListState::PARTIAL;
+    parent_->attachPartiallyFilled(this);
   }
 }
 
@@ -325,8 +326,12 @@ void SessionHolder::onSettingsAck(const HTTPSessionBase& sess) {
 }
 
 void SessionHolder::describe(std::ostream& os) const {
-  const AsyncSocket* sock =
-      session_->getTransport()->getUnderlyingTransport<AsyncSocket>();
+  const auto transport = session_->getTransport();
+  if (!transport) {
+    os << "(nullptr)";
+    return;
+  }
+  const AsyncSocket* sock = transport->getUnderlyingTransport<AsyncSocket>();
   if (sock) {
     os << "fd=" << sock->getNetworkSocket().toFd();
 

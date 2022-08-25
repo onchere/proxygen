@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -21,6 +21,13 @@ void HQDownstreamSession::onTransportReady() noexcept {
   transportReadyNotified_ = true;
 }
 
+void HQDownstreamSession::onFullHandshakeDone() noexcept {
+  HQDownstreamSession::DestructorGuard dg(this);
+  if (infoCallback_) {
+    infoCallback_->onFullHandshakeCompletion(*this);
+  }
+}
+
 void HQDownstreamSession::onAppRateLimited() noexcept {
   invokeOnEgressStreams(([](HQStreamTransportBase* stream) {
                           stream->txn_.onEgressTransportAppRateLimited();
@@ -28,8 +35,8 @@ void HQDownstreamSession::onAppRateLimited() noexcept {
                         false /* includeDetached */);
 }
 
-void HQDownstreamSession::onConnectionErrorHandler(
-    std::pair<quic::QuicErrorCode, std::string> /* error */) noexcept {
+void HQDownstreamSession::onConnectionSetupErrorHandler(
+    quic::QuicError /* error */) noexcept {
   // Currently the users of this callback treat it like a connect error,
   // not a general connection error. Since we don't have proper separation
   // suppress the errors after onTransportReady has happened.
@@ -237,8 +244,8 @@ void HQDownstreamSession::HQEgressPushStream::sendPushPromise(
   auto parentStream = session.findNonDetachedStream(*parentStreamId);
   if (!parentStream) {
     session_.dropConnectionAsync(
-        std::make_pair(quic::TransportErrorCode::STREAM_STATE_ERROR,
-                       "Send push promise on a stream without a parent"),
+        quic::QuicError(quic::TransportErrorCode::STREAM_STATE_ERROR,
+                        "Send push promise on a stream without a parent"),
         kErrorConnection);
     return;
   }

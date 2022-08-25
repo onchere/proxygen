@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -50,6 +50,24 @@ HTTPSessionBase::HTTPSessionBase(const SocketAddress& localAddr,
   setController(controller);
 }
 
+HTTPSessionBase::~HTTPSessionBase() {
+  if (sessionStats_) {
+    sessionStats_->recordPendingBufferedReadBytes(-1 *
+                                                  (int64_t)pendingReadSize_);
+  }
+}
+
+void HTTPSessionBase::setSessionStats(HTTPSessionStats* stats) {
+  if (sessionStats_ != stats && sessionStats_ != nullptr) {
+    sessionStats_->recordPendingBufferedReadBytes(-1 *
+                                                  (int64_t)pendingReadSize_);
+  }
+  sessionStats_ = stats;
+  if (sessionStats_) {
+    sessionStats_->recordPendingBufferedReadBytes(pendingReadSize_);
+  }
+}
+
 void HTTPSessionBase::runDestroyCallbacks() {
   if (infoCallback_) {
     infoCallback_->onDestroy(*this);
@@ -73,9 +91,11 @@ void HTTPSessionBase::initCodecHeaderIndexingStrategy() {
   // This is done here so that the strategy could be dynamic depending on the
   // session
   if (controller_ && isHTTP2CodecProtocol(codec_->getProtocol())) {
-    HTTP2Codec* h2Codec = static_cast<HTTP2Codec*>(codec_.getChainEndPtr());
-    h2Codec->setHeaderIndexingStrategy(
-        controller_->getHeaderIndexingStrategy());
+    auto* h2Codec = dynamic_cast<HTTP2Codec*>(codec_.getChainEndPtr());
+    if (h2Codec) {
+      h2Codec->setHeaderIndexingStrategy(
+          controller_->getHeaderIndexingStrategy());
+    }
   }
 }
 
@@ -88,6 +108,12 @@ bool HTTPSessionBase::onBodyImpl(std::unique_ptr<folly::IOBuf> chain,
   CHECK_LE(pendingReadSize_,
            std::numeric_limits<uint32_t>::max() - length - padding);
   pendingReadSize_ += length + padding;
+  if (httpSessionActivityTracker_) {
+    httpSessionActivityTracker_->onIngressBody(length + padding);
+  }
+  if (sessionStats_) {
+    sessionStats_->recordPendingBufferedReadBytes(length + padding);
+  }
   txn->onIngressBody(std::move(chain), padding);
   if (oldSize < pendingReadSize_) {
     // Transaction must have buffered something and not called
@@ -108,6 +134,10 @@ bool HTTPSessionBase::notifyBodyProcessed(uint32_t bytes) {
   CHECK_GE(pendingReadSize_, bytes);
   auto oldSize = pendingReadSize_;
   pendingReadSize_ -= bytes;
+  if (sessionStats_) {
+    sessionStats_->recordPendingBufferedReadBytes(-1 * (int64_t)bytes);
+  }
+
   VLOG(4) << *this << " Dequeued " << bytes << " bytes of ingress. "
           << "Ingress buffer uses " << pendingReadSize_ << " of "
           << readBufLimit_ << " bytes.";

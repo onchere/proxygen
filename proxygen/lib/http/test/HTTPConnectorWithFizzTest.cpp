@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -19,14 +19,14 @@
 
 using namespace proxygen;
 using namespace testing;
-using namespace folly;
 using namespace fizz::server;
 
 class MockHTTPConnectorCallback : public HTTPConnector::Callback {
  public:
   ~MockHTTPConnectorCallback() override = default;
-  MOCK_METHOD1(connectSuccess, void(HTTPUpstreamSession* session));
-  MOCK_METHOD1(connectError, void(const folly::AsyncSocketException& ex));
+  MOCK_METHOD(void, connectSuccess, (HTTPUpstreamSession * session));
+  MOCK_METHOD(void, connectError, (const folly::AsyncSocketException& ex));
+  MOCK_METHOD(void, preConnect, (folly::AsyncTransport * transport));
 };
 
 class HTTPConnectorWithFizzTest : public testing::Test {
@@ -38,11 +38,18 @@ class HTTPConnectorWithFizzTest : public testing::Test {
   void SetUp() override {
     folly::ssl::init();
 
-    timer_ = HHWheelTimer::newTimer(
+    timer_ = folly::HHWheelTimer::newTimer(
         &evb_,
-        std::chrono::milliseconds(HHWheelTimer::DEFAULT_TICK_INTERVAL),
-        AsyncTimeout::InternalEnum::NORMAL,
+        std::chrono::milliseconds(folly::HHWheelTimer::DEFAULT_TICK_INTERVAL),
+        folly::AsyncTimeout::InternalEnum::NORMAL,
         std::chrono::milliseconds(5000));
+
+    EXPECT_CALL(cb_, preConnect(_))
+        .WillOnce(Invoke([](folly::AsyncTransport* t) {
+          EXPECT_NE(t, nullptr);
+          EXPECT_NE(t->getUnderlyingTransport<fizz::client::AsyncFizzClient>(),
+                    nullptr);
+        }));
   }
 
  protected:
@@ -79,11 +86,11 @@ class HTTPConnectorWithFizzTest : public testing::Test {
           FAIL() << "Client error handler called: " << ex.what();
         }));
   }
-  EventBase evb_;
+  folly::EventBase evb_;
   fizz::server::test::MockHandshakeCallback handshakeCb_;
   DummyCallbackFactory factory_;
   fizz::server::test::FizzTestServer server_;
-  HHWheelTimer::UniquePtr timer_;
+  folly::HHWheelTimer::UniquePtr timer_;
   MockHTTPConnectorCallback cb_;
 };
 

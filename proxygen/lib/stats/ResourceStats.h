@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -8,8 +8,8 @@
 
 #pragma once
 
-#include "proxygen/lib/stats/PeriodicStats.h"
-#include "proxygen/lib/stats/ResourceData.h"
+#include <proxygen/lib/stats/PeriodicStats.h>
+#include <proxygen/lib/stats/ResourceData.h>
 
 namespace proxygen {
 
@@ -28,13 +28,13 @@ class ResourceStats : public PeriodicStats<ResourceData> {
    * proc loadavg.
    */
   explicit ResourceStats(std::unique_ptr<Resources> resources);
-  ~ResourceStats();
+  ~ResourceStats() override;
 
  protected:
   /**
    * Override getNewData so that we can return an instance of ResourceData.
    */
-  ResourceData* getNewData() const;
+  ResourceData* getNewData() const override;
 
   /**
    * Abstraction that enables callers to provide their own implementations

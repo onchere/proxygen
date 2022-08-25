@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -11,7 +11,6 @@
 #include <proxygen/lib/http/codec/HTTP1xCodec.h>
 #include <proxygen/lib/http/codec/HTTP2Codec.h>
 #include <proxygen/lib/http/codec/HTTP2Constants.h>
-#include <proxygen/lib/http/codec/SPDYCodec.h>
 
 namespace proxygen {
 
@@ -24,14 +23,13 @@ std::unique_ptr<HTTPCodec> DefaultHTTPCodecFactory::getCodec(
     TransportDirection direction,
     bool /* isTLS */) {
 
-  auto spdyVersion = SPDYCodec::getVersion(chosenProto);
-  if (spdyVersion) {
-    return std::make_unique<SPDYCodec>(direction, *spdyVersion);
-  } else if (chosenProto == proxygen::http2::kProtocolString ||
-             chosenProto == proxygen::http2::kProtocolCleartextString ||
-             chosenProto == proxygen::http2::kProtocolDraftString ||
-             chosenProto == proxygen::http2::kProtocolExperimentalString) {
-    return std::make_unique<HTTP2Codec>(direction);
+  if (chosenProto == proxygen::http2::kProtocolString ||
+      chosenProto == proxygen::http2::kProtocolCleartextString ||
+      chosenProto == proxygen::http2::kProtocolDraftString ||
+      chosenProto == proxygen::http2::kProtocolExperimentalString) {
+    auto codec = std::make_unique<HTTP2Codec>(direction);
+    codec->setStrictValidation(useStrictValidation());
+    return codec;
   } else {
     if (!chosenProto.empty() &&
         !HTTP1xCodec::supportsNextProtocol(chosenProto)) {
@@ -40,7 +38,8 @@ std::unique_ptr<HTTPCodec> DefaultHTTPCodecFactory::getCodec(
                  << "Attempting to use HTTP/1.1";
     }
 
-    return std::make_unique<HTTP1xCodec>(direction, forceHTTP1xCodecTo1_1_);
+    return std::make_unique<HTTP1xCodec>(
+        direction, forceHTTP1xCodecTo1_1_, useStrictValidation());
   }
 }
 } // namespace proxygen

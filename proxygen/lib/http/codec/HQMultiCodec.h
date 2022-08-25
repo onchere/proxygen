@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -49,9 +49,16 @@ class HQMultiCodec : public HQControlCodec {
     return true;
   }
 
+  bool isStreamIngressEgressAllowed(StreamID streamId) const {
+    CHECK(transportDirection_ == TransportDirection::DOWNSTREAM);
+    return streamId < egressGoawayAck_;
+  }
+
   HTTPCodec& addCodec(StreamID streamId) {
     if (transportDirection_ == TransportDirection::DOWNSTREAM &&
         (streamId & 0x3) == 0 && streamId >= minUnseenStreamID_) {
+      CHECK_LT(streamId, egressGoawayAck_)
+          << "Don't addCodec for refused stream";
       // only bump for client initiated bidi streams, for now
       minUnseenStreamID_ = streamId + 4;
     }

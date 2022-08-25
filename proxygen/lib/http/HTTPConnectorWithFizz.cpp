@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -34,7 +34,7 @@ void HTTPConnectorWithFizz::connectFizz(
   socket_.reset(fizzClient);
 
   connectStart_ = getCurrentTime();
-
+  cb_->preConnect(fizzClient);
   fizzClient->connect(connectAddr,
                       this,
                       std::move(verifier),

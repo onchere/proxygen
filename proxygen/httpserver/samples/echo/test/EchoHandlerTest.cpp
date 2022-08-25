@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -19,8 +19,8 @@ using namespace testing;
 
 class MockEchoStats : public EchoStats {
  public:
-  MOCK_METHOD0(recordRequest, void());
-  MOCK_METHOD0(getRequestCount, uint64_t());
+  MOCK_METHOD(void, recordRequest, ());
+  MOCK_METHOD(uint64_t, getRequestCount, ());
 };
 
 class EchoHandlerFixture : public testing::Test {

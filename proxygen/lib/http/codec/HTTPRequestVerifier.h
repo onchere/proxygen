@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -35,7 +35,7 @@ class HTTPRequestVerifier {
       return false;
     }
     if (!CodecUtil::validateMethod(method)) {
-      error = "Invalid method";
+      error = folly::to<std::string>("Invalid method: ", method);
       return false;
     }
     hasMethod_ = true;
@@ -44,19 +44,30 @@ class HTTPRequestVerifier {
     return true;
   }
 
-  bool setPath(folly::StringPiece path) {
+  bool setPath(folly::StringPiece path,
+               bool strictValidation,
+               bool allowEmptyPath) {
     if (hasPath_) {
       error = "Duplicate path";
       return false;
     }
-    if (!CodecUtil::validateURL(path, URLValidateMode::STRICT_COMPAT)) {
-      error = "Invalid url";
+    if (!CodecUtil::validateURL(path,
+                                strictValidation
+                                    ? URLValidateMode::STRICT
+                                    : URLValidateMode::STRICT_COMPAT)) {
+      error = folly::to<std::string>("Invalid url: ", path);
       return false;
     }
     hasPath_ = true;
     assert(msg_ != nullptr);
-    msg_->setURL(path.str());
-    return true;
+    // Relax strictValidation here if empty paths are allowed and it's empty
+    strictValidation &= !(allowEmptyPath && path.empty());
+    auto parseUrl = msg_->setURL(path.str(), strictValidation);
+    if (strictValidation && !parseUrl.valid()) {
+      error = folly::to<std::string>("Invalid url: ", path);
+      return false;
+    }
+    return !strictValidation || parseUrl.valid();
   }
 
   bool setScheme(folly::StringPiece scheme) {
@@ -66,7 +77,7 @@ class HTTPRequestVerifier {
     }
     // This just checks for alpha chars
     if (!CodecUtil::validateScheme(scheme)) {
-      error = "Invalid scheme";
+      error = folly::to<std::string>("Invalid scheme: ", scheme);
       return false;
     }
     hasScheme_ = true;
@@ -81,14 +92,19 @@ class HTTPRequestVerifier {
     return true;
   }
 
-  bool setAuthority(folly::StringPiece authority, bool validate = true) {
+  bool setAuthority(folly::StringPiece authority,
+                    bool validate,
+                    bool strictValidation) {
     if (hasAuthority_) {
       error = "Duplicate authority";
       return false;
     }
     if (validate &&
-        !CodecUtil::validateHeaderValue(authority, CodecUtil::STRICT_COMPAT)) {
-      error = "Invalid authority";
+        !CodecUtil::validateHeaderValue(
+            authority,
+            strictValidation ? CodecUtil::CtlEscapeMode::STRICT
+                             : CodecUtil::CtlEscapeMode::STRICT_COMPAT)) {
+      error = folly::to<std::string>("Invalid authority: ", authority);
       return false;
     }
     hasAuthority_ = true;
@@ -97,9 +113,14 @@ class HTTPRequestVerifier {
     return true;
   }
 
-  bool setUpgradeProtocol(folly::StringPiece protocol) {
+  bool setUpgradeProtocol(folly::StringPiece protocol, bool strictValidation) {
     if (hasUpgradeProtocol_) {
       error = "Duplicate protocol";
+      return false;
+    }
+    if (strictValidation && !CodecUtil::validateHeaderValue(
+                                protocol, CodecUtil::CtlEscapeMode::STRICT)) {
+      error = folly::to<std::string>("Invalid protocol: ", protocol);
       return false;
     }
     setHasUpgradeProtocol(true);

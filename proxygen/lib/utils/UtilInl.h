@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -9,6 +9,7 @@
 #pragma once
 
 #include <folly/Range.h>
+#include <folly/portability/Windows.h> // for windows compatibility: STRICT maybe defined by some win headers
 
 namespace proxygen {
 

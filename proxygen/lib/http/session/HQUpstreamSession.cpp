@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -27,8 +27,8 @@ void HQUpstreamSession::startNow() {
 void HQUpstreamSession::connectTimeoutExpired() noexcept {
   VLOG(4) << __func__ << " sess=" << *this << ": connection failed";
   if (connectCb_) {
-    onConnectionError(std::make_pair(quic::LocalErrorCode::CONNECT_FAILED,
-                                     "connect timeout"));
+    onConnectionError(quic::QuicError(quic::LocalErrorCode::CONNECT_FAILED,
+                                      "connect timeout"));
   }
 }
 
@@ -89,14 +89,14 @@ void HQUpstreamSession::onConnectionEnd() noexcept {
 
   HQSession::DestructorGuard dg(this);
   if (connectCb_) {
-    onConnectionErrorHandler(std::make_pair(
+    onConnectionSetupErrorHandler(quic::QuicError(
         quic::LocalErrorCode::CONNECT_FAILED, "session destroyed"));
   }
   HQSession::onConnectionEnd();
 }
 
-void HQUpstreamSession::onConnectionErrorHandler(
-    std::pair<quic::QuicErrorCode, std::string> code) noexcept {
+void HQUpstreamSession::onConnectionSetupErrorHandler(
+    quic::QuicError code) noexcept {
   // For an upstream connection, any error before onTransportReady gets
   // notified as a connect error.
   if (connectCb_) {

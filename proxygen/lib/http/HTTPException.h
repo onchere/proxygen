@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -125,6 +125,10 @@ class HTTPException : public proxygen::Exception {
 
   std::unique_ptr<HTTPMessage> movePartialMsg() {
     return std::move(partialMsg_);
+  }
+
+  HTTPMessage* getPartialMsg() const {
+    return partialMsg_.get();
   }
 
  private:

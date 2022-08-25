@@ -1,15 +1,15 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-#include "proxygen/lib/http/session/test/HQSessionMocks.h"
-#include "proxygen/lib/http/session/test/HQSessionTestCommon.h"
 #include <deque>
 #include <folly/io/Cursor.h>
+#include <proxygen/lib/http/session/test/HQSessionMocks.h>
+#include <proxygen/lib/http/session/test/HQSessionTestCommon.h>
 #include <quic/api/test/MockQuicSocket.h>
 
 using namespace proxygen;
@@ -74,7 +74,7 @@ class UnidirectionalReadDispatcherTest : public Test {
 TEST_F(UnidirectionalReadDispatcherTest, TestControlStreamCallback) {
   quic::StreamId expectedId = 5;
   ReadError readError =
-      std::make_pair(quic::GenericApplicationErrorCode::NO_ERROR, folly::none);
+      quic::QuicError(quic::GenericApplicationErrorCode::NO_ERROR);
   dispatcherCallback_->expectUnidirectionalReadAvailable(
       [&](quic::StreamId id) { ASSERT_EQ(id, expectedId); });
 

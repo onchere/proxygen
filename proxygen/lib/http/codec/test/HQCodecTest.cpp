@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -69,19 +69,17 @@ class HQCodecTestFixture : public T {
     downstreamH1qControlCodec_.setCallback(&callbacks_);
   }
 
-  std::unique_ptr<folly::IOBuf> parse() {
+  void parse() {
     auto consumed = downstreamCodec_->onIngress(*queue_.front());
     queue_.trimStart(consumed);
-    return queue_.move();
   }
 
-  std::unique_ptr<folly::IOBuf> parseUpstream() {
+  void parseUpstream() {
     auto consumed = upstreamCodec_->onIngress(*queue_.front());
     queue_.trimStart(consumed);
-    return queue_.move();
   }
 
-  std::unique_ptr<folly::IOBuf> parseControl(CodecType type) {
+  void parseControl(CodecType type) {
     HQControlCodec* codec = nullptr;
     downstreamControlCodec_.setCallback(&callbacks_);
     upstreamH1qControlCodec_.setCallback(&callbacks_);
@@ -104,7 +102,8 @@ class HQCodecTestFixture : public T {
         LOG(FATAL) << "Unknown Control Codec type";
         break;
     }
-    return codec->onUnidirectionalIngress(queueCtrl_.move());
+    auto ret = codec->onUnidirectionalIngress(queueCtrl_.move());
+    queueCtrl_.append(std::move(ret));
   }
 
   void qpackTest(bool blocked);
@@ -670,7 +669,7 @@ TEST_F(HQCodecTest, MultipleSettingsDownstream) {
             HTTP3::ErrorCode::HTTP_FRAME_UNEXPECTED);
 }
 
-TEST_F(HQCodecTest, PriorityCallback) {
+TEST_F(HQCodecTest, RfcPriorityCallback) {
   // SETTINGS is a must have
   writeValidFrame(queueCtrl_, FrameType::SETTINGS);
   writeValidFrame(queueCtrl_, FrameType::PRIORITY_UPDATE);
@@ -679,10 +678,28 @@ TEST_F(HQCodecTest, PriorityCallback) {
   EXPECT_TRUE(callbacks_.incremental);
 }
 
-TEST_F(HQCodecTest, PushPriorityCallback) {
+TEST_F(HQCodecTest, RfcPushPriorityCallback) {
   // SETTINGS is a must have
   writeValidFrame(queueCtrl_, FrameType::SETTINGS);
   writeValidFrame(queueCtrl_, FrameType::PUSH_PRIORITY_UPDATE);
+  parseControl(CodecType::CONTROL_DOWNSTREAM);
+  EXPECT_EQ(1, callbacks_.urgency);
+  EXPECT_TRUE(callbacks_.incremental);
+}
+
+TEST_F(HQCodecTest, PriorityCallback) {
+  // SETTINGS is a must have
+  writeValidFrame(queueCtrl_, FrameType::SETTINGS);
+  writeValidFrame(queueCtrl_, FrameType::FB_PRIORITY_UPDATE);
+  parseControl(CodecType::CONTROL_DOWNSTREAM);
+  EXPECT_EQ(1, callbacks_.urgency);
+  EXPECT_TRUE(callbacks_.incremental);
+}
+
+TEST_F(HQCodecTest, PushPriorityCallback) {
+  // SETTINGS is a must have
+  writeValidFrame(queueCtrl_, FrameType::SETTINGS);
+  writeValidFrame(queueCtrl_, FrameType::FB_PUSH_PRIORITY_UPDATE);
   parseControl(CodecType::CONTROL_DOWNSTREAM);
   EXPECT_EQ(1, callbacks_.urgency);
   EXPECT_TRUE(callbacks_.incremental);
@@ -720,6 +737,65 @@ TEST_F(HQCodecTest, ServerGoaway) {
 
 TEST_F(HQCodecTest, ClientGoaway) {
   testGoaway(upstreamControlCodec_, kMaxPushId + 1);
+}
+
+TEST_F(HQCodecTest, HighAscii) {
+  std::vector<HTTPMessage> reqs;
+  reqs.push_back(getGetRequest("/guacamole\xff"));
+
+  reqs.push_back(getGetRequest("/guacamole"));
+  reqs.back().getHeaders().set(HTTP_HEADER_HOST, std::string("foo.com\xff"));
+
+  reqs.push_back(getGetRequest("/guacamole"));
+  reqs.back().getHeaders().set(folly::StringPiece("Foo\xff"), "bar");
+
+  reqs.push_back(getGetRequest("/guacamole"));
+  reqs.back().getHeaders().set("Foo", std::string("bar\xff"));
+
+  for (auto& req : reqs) {
+    auto id = upstreamCodec_->createStream();
+    upstreamCodec_->generateHeader(
+        queue_, id, req, true, nullptr /* headerSize */);
+    HQStreamCodec downstreamCodec(
+        id,
+        TransportDirection::DOWNSTREAM,
+        qpackDownstream_,
+        qpackDownEncoderWriteBuf_,
+        qpackDownDecoderWriteBuf_,
+        [] { return std::numeric_limits<uint64_t>::max(); },
+        ingressSettings_);
+    downstreamCodec.setStrictValidation(true);
+    downstreamCodec.setCallback(&callbacks_);
+    qpackEncoderCodec_.onUnidirectionalIngress(qpackUpEncoderWriteBuf_.move());
+    auto consumed = downstreamCodec.onIngress(*queue_.front());
+    queue_.trimStart(consumed);
+  }
+
+  EXPECT_EQ(callbacks_.messageBegin, 4);
+  EXPECT_EQ(callbacks_.headersComplete, 0);
+  EXPECT_EQ(callbacks_.messageComplete, 0);
+  EXPECT_EQ(callbacks_.streamErrors, 4);
+  EXPECT_EQ(callbacks_.lastParseError->getProxygenError(), kErrorParseHeader);
+  EXPECT_EQ(callbacks_.sessionErrors, 0);
+  callbacks_.reset();
+
+  auto id = upstreamCodec_->createStream();
+  upstreamCodec_->generateHeader(
+      queue_, id, getGetRequest("/"), false, nullptr /* headerSize */);
+  HTTPHeaders trailers;
+  trailers.add("x-trailer-1", "pico-de-gallo\xff");
+  auto g = folly::makeGuard(
+      [this] { downstreamCodec_->setStrictValidation(false); });
+  downstreamCodec_->setStrictValidation(true);
+  upstreamCodec_->generateTrailers(queue_, id, trailers);
+  parse();
+
+  EXPECT_EQ(callbacks_.messageBegin, 1);
+  EXPECT_EQ(callbacks_.headersComplete, 1);
+  EXPECT_EQ(callbacks_.messageComplete, 0);
+  EXPECT_EQ(callbacks_.streamErrors, 1);
+  EXPECT_EQ(callbacks_.lastParseError->getProxygenError(), kErrorParseHeader);
+  EXPECT_EQ(callbacks_.sessionErrors, 0);
 }
 
 struct FrameAllowedParams {
@@ -773,9 +849,15 @@ std::string frameParamsToTestName(
       testName += "MaxPushID";
       break;
     case FrameType::PRIORITY_UPDATE:
-      testName += "PriorityUpdate";
+      testName += "RfcPriorityUpdate";
       break;
     case FrameType::PUSH_PRIORITY_UPDATE:
+      testName += "RfcPushPriorityUpdate";
+      break;
+    case FrameType::FB_PRIORITY_UPDATE:
+      testName += "PriorityUpdate";
+      break;
+    case FrameType::FB_PUSH_PRIORITY_UPDATE:
       testName += "PushPriorityUpdate";
       break;
     default:
@@ -830,6 +912,7 @@ TEST_P(HQCodecTestFrameAllowed, FrameAllowedOnCodec) {
   // If an error was triggered, check that any additional parse call does not
   // raise another error, and that no new bytes are parsed
   if (!GetParam().allowed) {
+    CHECK(queueCtrl_.chainLength() != 0 || queue_.chainLength() != 0);
     EXPECT_EQ(callbacks_.lastParseError->getHttp3ErrorCode(),
               HTTP3::ErrorCode::HTTP_FRAME_UNEXPECTED);
     auto lenBefore = 0;
@@ -865,7 +948,7 @@ TEST_P(HQCodecTestFrameAllowed, FrameAllowedOnCodec) {
   }
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     FrameAllowedTests,
     HQCodecTestFrameAllowed,
     Values(
@@ -891,9 +974,13 @@ INSTANTIATE_TEST_CASE_P(
         (FrameAllowedParams){
             CodecType::DOWNSTREAM, FrameType::PUSH_PRIORITY_UPDATE, false},
         (FrameAllowedParams){
-            CodecType::UPSTREAM, FrameType::PRIORITY_UPDATE, false},
+            CodecType::DOWNSTREAM, FrameType::FB_PRIORITY_UPDATE, false},
         (FrameAllowedParams){
-            CodecType::UPSTREAM, FrameType::PUSH_PRIORITY_UPDATE, false},
+            CodecType::DOWNSTREAM, FrameType::FB_PUSH_PRIORITY_UPDATE, false},
+        (FrameAllowedParams){
+            CodecType::UPSTREAM, FrameType::FB_PRIORITY_UPDATE, false},
+        (FrameAllowedParams){
+            CodecType::UPSTREAM, FrameType::FB_PUSH_PRIORITY_UPDATE, false},
         // HQ Upstream Ingress Control Codec
         (FrameAllowedParams){
             CodecType::CONTROL_UPSTREAM, FrameType::DATA, false},
@@ -918,6 +1005,11 @@ INSTANTIATE_TEST_CASE_P(
         (FrameAllowedParams){CodecType::CONTROL_UPSTREAM,
                              FrameType::PUSH_PRIORITY_UPDATE,
                              false},
+        (FrameAllowedParams){
+            CodecType::CONTROL_UPSTREAM, FrameType::FB_PRIORITY_UPDATE, false},
+        (FrameAllowedParams){CodecType::CONTROL_UPSTREAM,
+                             FrameType::FB_PUSH_PRIORITY_UPDATE,
+                             false},
         // HQ Downstream Ingress Control Codec
         (FrameAllowedParams){
             CodecType::CONTROL_DOWNSTREAM, FrameType::DATA, false},
@@ -941,6 +1033,11 @@ INSTANTIATE_TEST_CASE_P(
             CodecType::CONTROL_DOWNSTREAM, FrameType::PRIORITY_UPDATE, true},
         (FrameAllowedParams){CodecType::CONTROL_DOWNSTREAM,
                              FrameType::PUSH_PRIORITY_UPDATE,
+                             true},
+        (FrameAllowedParams){
+            CodecType::CONTROL_DOWNSTREAM, FrameType::FB_PRIORITY_UPDATE, true},
+        (FrameAllowedParams){CodecType::CONTROL_DOWNSTREAM,
+                             FrameType::FB_PUSH_PRIORITY_UPDATE,
                              true}),
     frameParamsToTestName);
 
@@ -959,7 +1056,7 @@ TEST_P(H1QCodecTestFrameAllowed, FrameAllowedOnH1qControlCodec) {
   }
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     H1QFrameAllowedTests,
     H1QCodecTestFrameAllowed,
     Values(
@@ -1031,7 +1128,7 @@ TEST_P(HQCodecTestFrameBeforeSettings, FrameAllowedOnH1qControlCodec) {
   }
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     FrameBeforeSettingsTests,
     HQCodecTestFrameBeforeSettings,
     Values(

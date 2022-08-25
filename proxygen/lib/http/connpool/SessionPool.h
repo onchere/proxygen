@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -10,7 +10,7 @@
 
 #include <folly/io/async/EventBase.h>
 
-#include "proxygen/lib/http/connpool/SessionHolder.h"
+#include <proxygen/lib/http/connpool/SessionHolder.h>
 
 namespace proxygen {
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -26,7 +26,7 @@ class QPACKHeaderTable : public HeaderTable {
 
   QPACKHeaderTable(uint32_t capacityVal, bool trackReferences);
 
-  ~QPACKHeaderTable() {
+  ~QPACKHeaderTable() override {
   }
   QPACKHeaderTable(const QPACKHeaderTable&) = delete;
   QPACKHeaderTable& operator=(const QPACKHeaderTable&) = delete;

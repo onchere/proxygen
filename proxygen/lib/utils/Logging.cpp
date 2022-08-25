@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -11,7 +11,7 @@
 #include <folly/Format.h>
 #include <folly/Singleton.h>
 #include <folly/String.h>
-#include <folly/detail/SingletonStackTrace.h>
+#include <folly/experimental/symbolizer/Symbolizer.h>
 #include <fstream>
 #include <memory>
 #include <ostream>

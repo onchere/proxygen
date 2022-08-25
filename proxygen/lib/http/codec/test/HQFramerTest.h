@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -71,7 +71,9 @@ void writeValidFrame(folly::IOBufQueue& queue, proxygen::hq::FrameType type) {
       break;
     }
     case proxygen::hq::FrameType::PRIORITY_UPDATE:
-    case proxygen::hq::FrameType::PUSH_PRIORITY_UPDATE: {
+    case proxygen::hq::FrameType::PUSH_PRIORITY_UPDATE:
+    case proxygen::hq::FrameType::FB_PRIORITY_UPDATE:
+    case proxygen::hq::FrameType::FB_PUSH_PRIORITY_UPDATE: {
       quic::StreamId prioritizedId = 123;
       auto prioritizedIdSize = quic::getQuicIntegerSize(prioritizedId);
       auto data = folly::IOBuf::copyBuffer("u=1, i");

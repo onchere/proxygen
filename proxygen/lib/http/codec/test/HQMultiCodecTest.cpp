@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -83,7 +83,7 @@ TEST_F(HQMultiCodecTest, Ingress) {
   EXPECT_GT(codec_.getCompressionInfo().ingress.staticRefs_, 0);
 
   EXPECT_TRUE(codec_.setCurrentStream(id));
-  writeBuf_.clear();
+  writeBuf_.reset();
   std::array<uint8_t, 2> frameMissingPayload{0x01, 0x10};
   writeBuf_.append(folly::IOBuf::wrapBuffer(frameMissingPayload.data(),
                                             frameMissingPayload.size()));

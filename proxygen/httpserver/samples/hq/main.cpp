@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -13,13 +13,17 @@
 
 #include <proxygen/httpserver/samples/hq/ConnIdLogger.h>
 #include <proxygen/httpserver/samples/hq/HQClient.h>
+#include <proxygen/httpserver/samples/hq/HQCommandLine.h>
 #include <proxygen/httpserver/samples/hq/HQParams.h>
-#include <proxygen/httpserver/samples/hq/HQServer.h>
+#include <proxygen/httpserver/samples/hq/HQServerModule.h>
 #include <proxygen/lib/transport/PersistentQuicPskCache.h>
 
 using namespace quic::samples;
 
 int main(int argc, char* argv[]) {
+  auto startTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock().now().time_since_epoch())
+                       .count();
 #if FOLLY_HAVE_LIBGFLAGS
   // Enable glog logging to stderr by default.
   gflags::SetCommandLineOptionWithMode(
@@ -27,12 +31,13 @@ int main(int argc, char* argv[]) {
 #endif
   folly::init(&argc, &argv, false);
   folly::ssl::init();
+  int err = 0;
 
   auto expectedParams = initializeParamsFromCmdline();
   if (expectedParams) {
     auto& params = expectedParams.value();
     // TODO: move sink to params
-    proxygen::ConnIdLogSink sink(params);
+    proxygen::ConnIdLogSink sink(params.logdir, params.logprefix);
     if (sink.isValid()) {
       AddLogSink(&sink);
     } else if (!params.logdir.empty()) {
@@ -41,20 +46,29 @@ int main(int argc, char* argv[]) {
 
     switch (params.mode) {
       case HQMode::SERVER:
-        startServer(params);
+        startServer(boost::get<HQToolServerParams>(params.params));
         break;
       case HQMode::CLIENT:
-        startClient(params);
+        err = startClient(boost::get<HQToolClientParams>(params.params));
         break;
       default:
         LOG(ERROR) << "Unknown mode specified: ";
         return -1;
     }
-    return 0;
+    if (params.logRuntime) {
+      LOG(INFO) << "Run time: "
+                << std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock().now().time_since_epoch())
+                           .count() -
+                       startTime
+                << "ms";
+    }
+    return err;
   } else {
     for (auto& param : expectedParams.error()) {
       LOG(ERROR) << "Invalid param: " << param.name << " " << param.value << " "
                  << param.errorMsg;
     }
+    return -1;
   }
 }

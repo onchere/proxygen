@@ -1,15 +1,15 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-#include "proxygen/lib/http/session/HQStreamBase.h"
-#include "proxygen/lib/http/session/test/HQSessionMocks.h"
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
+#include <proxygen/lib/http/session/HQStreamBase.h>
+#include <proxygen/lib/http/session/test/HQSessionMocks.h>
 
 using namespace proxygen;
 using namespace testing;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -39,7 +39,7 @@ using namespace std;
 using namespace testing;
 
 const HTTPSettings kDefaultIngressSettings{
-    {SettingsId::INITIAL_WINDOW_SIZE, 65536}};
+    {SettingsId::INITIAL_WINDOW_SIZE, http2::kInitialWindow}};
 const HTTPSettings kIngressCertAuthSettings{
     {SettingsId::SETTINGS_HTTP_CERT_AUTH, 128}};
 HTTPSettings kEgressCertAuthSettings{
@@ -51,8 +51,9 @@ class MockCodecDownstreamTest : public testing::Test {
       : eventBase_(),
         codec_(new StrictMock<MockHTTPCodec>()),
         transport_(new NiceMock<MockAsyncTransport>()),
-        transactionTimeouts_(makeInternalTimeoutSet(&eventBase_)) {
+        transactionTimeouts_(makeTimeoutSet(&eventBase_)) {
 
+    HTTP2PriorityQueue::setNodeLifetime(std::chrono::milliseconds(2));
     EXPECT_CALL(*transport_, writeChain(_, _, _))
         .WillRepeatedly(Invoke(this, &MockCodecDownstreamTest::onWriteChain));
     EXPECT_CALL(*transport_, good())
@@ -79,11 +80,11 @@ class MockCodecDownstreamTest : public testing::Test {
     EXPECT_CALL(*codec_, supportsStreamFlowControl())
         .WillRepeatedly(Return(true));
     EXPECT_CALL(*codec_, getProtocol())
-        .WillRepeatedly(Return(CodecProtocol::SPDY_3_1));
+        .WillRepeatedly(Return(CodecProtocol::HTTP_2));
     EXPECT_CALL(*codec_, getUserAgent()).WillRepeatedly(ReturnRef(userAgent_));
     EXPECT_CALL(*codec_, setParserPaused(_)).WillRepeatedly(Return());
     EXPECT_CALL(*codec_, supportsSessionFlowControl())
-        .WillRepeatedly(Return(true)); // simulate spdy 3.1
+        .WillRepeatedly(Return(true));
     EXPECT_CALL(*codec_, getIngressSettings())
         .WillRepeatedly(Return(&kDefaultIngressSettings));
     EXPECT_CALL(*codec_, isReusable())
@@ -91,7 +92,8 @@ class MockCodecDownstreamTest : public testing::Test {
     EXPECT_CALL(*codec_, isWaitingToDrain())
         .WillRepeatedly(ReturnPointee(&drainPending_));
     EXPECT_CALL(*codec_, generateSettings(_));
-    EXPECT_CALL(*codec_, getDefaultWindowSize()).WillRepeatedly(Return(65536));
+    EXPECT_CALL(*codec_, getDefaultWindowSize())
+        .WillRepeatedly(Return(http2::kInitialWindow));
     EXPECT_CALL(*codec_, createStream()).WillRepeatedly(InvokeWithoutArgs([&] {
       return pushStreamID_ += 2;
     }));
@@ -215,33 +217,33 @@ TEST_F(MockCodecDownstreamTest, OnAbortThenTimeouts) {
       .WillOnce(Return(&handler1))
       .WillOnce(Return(&handler2));
 
-  EXPECT_CALL(handler1, setTransaction(_))
+  EXPECT_CALL(handler1, _setTransaction(_))
       .WillOnce(
           Invoke([&handler1](HTTPTransaction* txn) { handler1.txn_ = txn; }));
-  EXPECT_CALL(handler1, onHeadersComplete(_))
+  EXPECT_CALL(handler1, _onHeadersComplete(_))
       .WillOnce(Invoke([&handler1](std::shared_ptr<HTTPMessage>) {
         handler1.sendHeaders(200, 100);
         handler1.sendBody(100);
       }));
-  EXPECT_CALL(handler1, onError(_));
-  EXPECT_CALL(handler1, detachTransaction());
-  EXPECT_CALL(handler2, setTransaction(_))
+  EXPECT_CALL(handler1, _onError(_));
+  EXPECT_CALL(handler1, _detachTransaction());
+  EXPECT_CALL(handler2, _setTransaction(_))
       .WillOnce(
           Invoke([&handler2](HTTPTransaction* txn) { handler2.txn_ = txn; }));
-  EXPECT_CALL(handler2, onHeadersComplete(_))
+  EXPECT_CALL(handler2, _onHeadersComplete(_))
       .WillOnce(Invoke([&handler2](std::shared_ptr<HTTPMessage>) {
         handler2.sendHeaders(200, 100);
         handler2.sendBody(100);
       }));
-  EXPECT_CALL(handler2, onBodyWithOffset(_, _));
-  EXPECT_CALL(handler2, onError(_))
+  EXPECT_CALL(handler2, _onBodyWithOffset(_, _));
+  EXPECT_CALL(handler2, _onError(_))
       .WillOnce(Invoke([&](const HTTPException& ex) {
         ASSERT_EQ(ex.getProxygenError(), kErrorWriteTimeout);
         ASSERT_EQ(folly::to<std::string>("WriteTimeout on transaction id: ",
                                          handler2.txn_->getID()),
                   std::string(ex.what()));
       }));
-  EXPECT_CALL(handler2, detachTransaction());
+  EXPECT_CALL(handler2, _detachTransaction());
 
   EXPECT_CALL(mockController_, detachSession(_));
 
@@ -250,7 +252,7 @@ TEST_F(MockCodecDownstreamTest, OnAbortThenTimeouts) {
   codecCallback_->onMessageBegin(HTTPCodec::StreamID(3), req2.get());
   codecCallback_->onHeadersComplete(HTTPCodec::StreamID(3), std::move(req2));
   // do the write, enqeue byte event
-  eventBase_.loop();
+  eventBase_.loopOnce();
 
   // recv an abort, detach the handler from txn1 (txn1 stays around due to the
   // enqueued byte event)
@@ -284,35 +286,35 @@ TEST_F(MockCodecDownstreamTest, ServerPush) {
 
   EXPECT_CALL(mockController_, getRequestHandler(_, _))
       .WillOnce(Return(&handler));
-  EXPECT_CALL(handler, setTransaction(_)).WillOnce(SaveArg<0>(&handler.txn_));
+  EXPECT_CALL(handler, _setTransaction(_)).WillOnce(SaveArg<0>(&handler.txn_));
 
-  EXPECT_CALL(handler, onHeadersComplete(_))
+  EXPECT_CALL(handler, _onHeadersComplete(_))
       .WillOnce(Invoke([&](std::shared_ptr<HTTPMessage>) {
         pushTxn = handler.txn_->newPushedTransaction(&pushHandler);
         pushHandler.sendPushHeaders(
             "/foo", "www.foo.com", 100, handler.txn_->getPriority());
         pushHandler.sendBody(100);
         pushTxn->sendEOM();
-        eventBase_.loop(); // flush the push txn's body
+        eventBase_.loopOnce(); // flush the push txn's body
       }));
-  EXPECT_CALL(pushHandler, setTransaction(_))
+  EXPECT_CALL(pushHandler, _setTransaction(_))
       .WillOnce(Invoke(
           [&pushHandler](HTTPTransaction* txn) { pushHandler.txn_ = txn; }));
 
   EXPECT_CALL(*codec_, generatePushPromise(_, 2, _, _, _, _));
   EXPECT_CALL(*codec_,
               generateBody(_, 2, PtrBufHasLen(uint64_t(100)), _, true));
-  EXPECT_CALL(pushHandler, detachTransaction());
+  EXPECT_CALL(pushHandler, _detachTransaction());
 
-  EXPECT_CALL(handler, onEOM()).WillOnce(Invoke([&] {
+  EXPECT_CALL(handler, _onEOM()).WillOnce(Invoke([&] {
     handler.sendReplyWithBody(200, 100);
-    eventBase_.loop(); // flush the response to the normal request
+    eventBase_.loopOnce(); // flush the response to the normal request
   }));
 
   EXPECT_CALL(*codec_, generateHeader(_, 1, _, _, _, _));
   EXPECT_CALL(*codec_,
               generateBody(_, 1, PtrBufHasLen(uint64_t(100)), _, true));
-  EXPECT_CALL(handler, detachTransaction());
+  EXPECT_CALL(handler, _detachTransaction());
 
   codecCallback_->onMessageBegin(HTTPCodec::StreamID(1), req.get());
   codecCallback_->onHeadersComplete(HTTPCodec::StreamID(1), std::move(req));
@@ -338,10 +340,10 @@ TEST_F(MockCodecDownstreamTest, ServerPushAfterGoaway) {
   EXPECT_CALL(mockController_, getRequestHandler(_, _))
       .WillOnce(Return(&handler));
 
-  EXPECT_CALL(handler, setTransaction(_))
+  EXPECT_CALL(handler, _setTransaction(_))
       .WillOnce(
           Invoke([&handler](HTTPTransaction* txn) { handler.txn_ = txn; }));
-  EXPECT_CALL(handler, onHeadersComplete(_))
+  EXPECT_CALL(handler, _onHeadersComplete(_))
       .WillOnce(Invoke([&](std::shared_ptr<HTTPMessage>) {
         // Initiate server push transactions.
         pushTxn = handler.txn_->newPushedTransaction(&pushHandler1);
@@ -359,15 +361,15 @@ TEST_F(MockCodecDownstreamTest, ServerPushAfterGoaway) {
         pushTxn->sendEOM();
       }));
   // Push transaction 1 - drained
-  EXPECT_CALL(pushHandler1, setTransaction(_))
+  EXPECT_CALL(pushHandler1, _setTransaction(_))
       .WillOnce(Invoke(
           [&pushHandler1](HTTPTransaction* txn) { pushHandler1.txn_ = txn; }));
-  EXPECT_CALL(pushHandler1, detachTransaction());
+  EXPECT_CALL(pushHandler1, _detachTransaction());
   // Push transaction 2 - aborted by onError after goaway
-  EXPECT_CALL(pushHandler2, setTransaction(_))
+  EXPECT_CALL(pushHandler2, _setTransaction(_))
       .WillOnce(Invoke(
           [&pushHandler2](HTTPTransaction* txn) { pushHandler2.txn_ = txn; }));
-  EXPECT_CALL(pushHandler2, onError(_))
+  EXPECT_CALL(pushHandler2, _onError(_))
       .WillOnce(Invoke([&](const HTTPException& err) {
         EXPECT_TRUE(err.hasProxygenError());
         EXPECT_EQ(err.getProxygenError(), kErrorStreamUnacknowledged);
@@ -376,10 +378,10 @@ TEST_F(MockCodecDownstreamTest, ServerPushAfterGoaway) {
                                    pushHandler2.txn_->getID()),
             std::string(err.what()));
       }));
-  EXPECT_CALL(pushHandler2, detachTransaction());
+  EXPECT_CALL(pushHandler2, _detachTransaction());
 
-  EXPECT_CALL(handler, onEOM());
-  EXPECT_CALL(handler, detachTransaction());
+  EXPECT_CALL(handler, _onEOM());
+  EXPECT_CALL(handler, _detachTransaction());
 
   // Receive client request
   auto req = makeGetRequest();
@@ -417,10 +419,10 @@ TEST_F(MockCodecDownstreamTest, ServerPushAbort) {
   EXPECT_CALL(mockController_, getRequestHandler(_, _))
       .WillOnce(Return(&handler));
 
-  EXPECT_CALL(handler, setTransaction(_))
+  EXPECT_CALL(handler, _setTransaction(_))
       .WillOnce(
           Invoke([&handler](HTTPTransaction* txn) { handler.txn_ = txn; }));
-  EXPECT_CALL(handler, onHeadersComplete(_))
+  EXPECT_CALL(handler, _onHeadersComplete(_))
       .WillOnce(Invoke([&](std::shared_ptr<HTTPMessage>) {
         // Initiate server push transactions
         pushTxn1 = handler.txn_->newPushedTransaction(&pushHandler1);
@@ -438,25 +440,25 @@ TEST_F(MockCodecDownstreamTest, ServerPushAbort) {
       }));
 
   // pushTxn1 should be aborted
-  EXPECT_CALL(pushHandler1, setTransaction(_))
+  EXPECT_CALL(pushHandler1, _setTransaction(_))
       .WillOnce(Invoke(
           [&pushHandler1](HTTPTransaction* txn) { pushHandler1.txn_ = txn; }));
-  EXPECT_CALL(pushHandler1, onError(_))
+  EXPECT_CALL(pushHandler1, _onError(_))
       .WillOnce(Invoke([&](const HTTPException& err) {
         EXPECT_TRUE(err.hasProxygenError());
         EXPECT_EQ(err.getProxygenError(), kErrorStreamAbort);
         ASSERT_EQ("Stream aborted, streamID=2, code=CANCEL",
                   std::string(err.what()));
       }));
-  EXPECT_CALL(pushHandler1, detachTransaction());
+  EXPECT_CALL(pushHandler1, _detachTransaction());
 
-  EXPECT_CALL(pushHandler2, setTransaction(_))
+  EXPECT_CALL(pushHandler2, _setTransaction(_))
       .WillOnce(Invoke(
           [&pushHandler2](HTTPTransaction* txn) { pushHandler2.txn_ = txn; }));
-  EXPECT_CALL(pushHandler2, detachTransaction());
+  EXPECT_CALL(pushHandler2, _detachTransaction());
 
-  EXPECT_CALL(handler, onEOM());
-  EXPECT_CALL(handler, detachTransaction());
+  EXPECT_CALL(handler, _onEOM());
+  EXPECT_CALL(handler, _detachTransaction());
 
   // Receive client request
   auto req = makeGetRequest();
@@ -488,10 +490,10 @@ TEST_F(MockCodecDownstreamTest, ServerPushAbortAssoc) {
   EXPECT_CALL(mockController_, getRequestHandler(_, _))
       .WillOnce(Return(&handler));
 
-  EXPECT_CALL(handler, setTransaction(_))
+  EXPECT_CALL(handler, _setTransaction(_))
       .WillOnce(
           Invoke([&handler](HTTPTransaction* txn) { handler.txn_ = txn; }));
-  EXPECT_CALL(handler, onHeadersComplete(_))
+  EXPECT_CALL(handler, _onHeadersComplete(_))
       .WillOnce(Invoke([&](std::shared_ptr<HTTPMessage>) {
         // Initiate server push transactions
         auto pushTxn = handler.txn_->newPushedTransaction(&pushHandler1);
@@ -499,40 +501,39 @@ TEST_F(MockCodecDownstreamTest, ServerPushAbortAssoc) {
         pushHandler1.sendPushHeaders(
             "/foo", "www.foo.com", 100, handler.txn_->getPriority());
         pushHandler1.sendBody(100);
-        eventBase_.loop();
 
         pushTxn = handler.txn_->newPushedTransaction(&pushHandler2);
         CHECK_EQ(pushTxn->getID(), HTTPCodec::StreamID(4));
         pushHandler2.sendPushHeaders(
             "/foo", "www.foo.com", 100, handler.txn_->getPriority());
         pushHandler2.sendBody(100);
-        eventBase_.loop();
       }));
 
   // Both push txns and the assoc txn should remain alive, and in this case
   // time out.
-  EXPECT_CALL(pushHandler1, setTransaction(_))
+  EXPECT_CALL(pushHandler1, _setTransaction(_))
       .WillOnce(Invoke(
           [&pushHandler1](HTTPTransaction* txn) { pushHandler1.txn_ = txn; }));
-  EXPECT_CALL(pushHandler2, setTransaction(_))
+  EXPECT_CALL(pushHandler2, _setTransaction(_))
       .WillOnce(Invoke(
           [&pushHandler2](HTTPTransaction* txn) { pushHandler2.txn_ = txn; }));
-  EXPECT_CALL(pushHandler1, detachTransaction());
-  EXPECT_CALL(pushHandler2, detachTransaction());
+  EXPECT_CALL(pushHandler1, _detachTransaction());
+  EXPECT_CALL(pushHandler2, _detachTransaction());
 
-  EXPECT_CALL(handler, onError(_))
+  EXPECT_CALL(handler, _onError(_))
       .WillOnce(Invoke([&](const HTTPException& err) {
         EXPECT_TRUE(err.hasProxygenError());
         EXPECT_EQ(err.getProxygenError(), kErrorStreamAbort);
         ASSERT_EQ("Stream aborted, streamID=1, code=CANCEL",
                   std::string(err.what()));
       }));
-  EXPECT_CALL(handler, detachTransaction());
+  EXPECT_CALL(handler, _detachTransaction());
 
   // Receive client request
   auto req = makeGetRequest();
   codecCallback_->onMessageBegin(HTTPCodec::StreamID(1), req.get());
   codecCallback_->onHeadersComplete(HTTPCodec::StreamID(1), std::move(req));
+  eventBase_.loopOnce();
 
   // Send client abort on assoc stream
   codecCallback_->onAbort(HTTPCodec::StreamID(1), ErrorCode::CANCEL);
@@ -543,7 +544,7 @@ TEST_F(MockCodecDownstreamTest, ServerPushAbortAssoc) {
   pushHandler1.sendEOM();
   pushHandler2.sendEOM();
 
-  eventBase_.loop();
+  eventBase_.loopOnce();
 
   EXPECT_CALL(*codec_, onIngressEOF());
   EXPECT_CALL(mockController_, detachSession(_));
@@ -561,16 +562,16 @@ TEST_F(MockCodecDownstreamTest, ServerPushClientMessage) {
 
   EXPECT_CALL(mockController_, getRequestHandler(_, _))
       .WillOnce(Return(&handler));
-  EXPECT_CALL(handler, setTransaction(_)).WillOnce(SaveArg<0>(&handler.txn_));
+  EXPECT_CALL(handler, _setTransaction(_)).WillOnce(SaveArg<0>(&handler.txn_));
 
-  EXPECT_CALL(handler, onHeadersComplete(_))
+  EXPECT_CALL(handler, _onHeadersComplete(_))
       .WillOnce(Invoke([&](std::shared_ptr<HTTPMessage> msg) {
         pushTxn = handler.txn_->newPushedTransaction(&pushHandler);
         auto pri = handler.txn_->getPriority();
         msg->setHTTP2Priority(
             std::make_tuple(pri.streamDependency, pri.exclusive, pri.weight));
       }));
-  EXPECT_CALL(pushHandler, setTransaction(_))
+  EXPECT_CALL(pushHandler, _setTransaction(_))
       .WillOnce(Invoke(
           [&pushHandler](HTTPTransaction* txn) { pushHandler.txn_ = txn; }));
 
@@ -579,28 +580,28 @@ TEST_F(MockCodecDownstreamTest, ServerPushClientMessage) {
 
   EXPECT_CALL(*codec_, generateRstStream(_, 2, ErrorCode::STREAM_CLOSED))
       .WillRepeatedly(Return(1));
-  EXPECT_CALL(pushHandler, onError(_))
+  EXPECT_CALL(pushHandler, _onError(_))
       .WillOnce(Invoke([&](const HTTPException& ex) {
         EXPECT_TRUE(ex.hasCodecStatusCode());
         EXPECT_EQ(ex.getCodecStatusCode(), ErrorCode::STREAM_CLOSED);
         ASSERT_EQ("Downstream attempts to send ingress, abort.",
                   std::string(ex.what()));
       }));
-  EXPECT_CALL(pushHandler, detachTransaction());
+  EXPECT_CALL(pushHandler, _detachTransaction());
 
   // While the assoc stream is open and pushHandler has been initialized, send
   // an upstream message on the push stream causing a RST_STREAM.
   req = makeGetRequest();
   codecCallback_->onMessageBegin(HTTPCodec::StreamID(2), req.get());
 
-  EXPECT_CALL(handler, onEOM()).WillOnce(InvokeWithoutArgs([&] {
+  EXPECT_CALL(handler, _onEOM()).WillOnce(InvokeWithoutArgs([&] {
     handler.sendReplyWithBody(200, 100);
     eventBase_.loop(); // flush the response to the assoc request
   }));
   EXPECT_CALL(*codec_, generateHeader(_, 1, _, _, _, _));
   EXPECT_CALL(*codec_,
               generateBody(_, 1, PtrBufHasLen(uint64_t(100)), _, true));
-  EXPECT_CALL(handler, detachTransaction());
+  EXPECT_CALL(handler, _detachTransaction());
 
   // Complete the assoc request/response
   codecCallback_->onMessageComplete(HTTPCodec::StreamID(1), false);
@@ -623,10 +624,10 @@ TEST_F(MockCodecDownstreamTest, ReadTimeout) {
   EXPECT_CALL(mockController_, getRequestHandler(_, _))
       .WillOnce(Return(&handler1));
 
-  EXPECT_CALL(handler1, setTransaction(_))
+  EXPECT_CALL(handler1, _setTransaction(_))
       .WillOnce(
           Invoke([&handler1](HTTPTransaction* txn) { handler1.txn_ = txn; }));
-  EXPECT_CALL(handler1, onHeadersComplete(_));
+  EXPECT_CALL(handler1, _onHeadersComplete(_));
 
   codecCallback_->onMessageBegin(HTTPCodec::StreamID(1), req1.get());
   codecCallback_->onHeadersComplete(HTTPCodec::StreamID(1), std::move(req1));
@@ -634,7 +635,7 @@ TEST_F(MockCodecDownstreamTest, ReadTimeout) {
   EXPECT_EQ(httpSession_->getConnectionCloseReason(),
             ConnectionCloseReason::TIMEOUT);
 
-  EXPECT_CALL(handler1, onEOM()).WillOnce(Invoke([&handler1]() {
+  EXPECT_CALL(handler1, _onEOM()).WillOnce(Invoke([&handler1]() {
     handler1.txn_->pauseIngress();
   }));
 
@@ -649,7 +650,7 @@ TEST_F(MockCodecDownstreamTest, ReadTimeout) {
                     std::shared_ptr<folly::IOBuf>,
                     folly::WriteFlags) { callback->writeSuccess(); }));
 
-  EXPECT_CALL(handler1, detachTransaction());
+  EXPECT_CALL(handler1, _detachTransaction());
 
   // Send the response, timeout.  Now it's idle and should close.
   handler1.txn_->resumeIngress();
@@ -671,11 +672,11 @@ TEST_F(MockCodecDownstreamTest, Ping) {
   EXPECT_CALL(mockController_, getRequestHandler(_, _))
       .WillOnce(Return(&handler1));
 
-  EXPECT_CALL(handler1, setTransaction(_))
+  EXPECT_CALL(handler1, _setTransaction(_))
       .WillOnce(
           Invoke([&handler1](HTTPTransaction* txn) { handler1.txn_ = txn; }));
-  EXPECT_CALL(handler1, onHeadersComplete(_));
-  EXPECT_CALL(handler1, onEOM()).WillOnce(InvokeWithoutArgs([&handler1]() {
+  EXPECT_CALL(handler1, _onHeadersComplete(_));
+  EXPECT_CALL(handler1, _onEOM()).WillOnce(InvokeWithoutArgs([&handler1]() {
     handler1.sendReplyWithBody(200, 100);
   }));
 
@@ -684,7 +685,7 @@ TEST_F(MockCodecDownstreamTest, Ping) {
   // Ping jumps ahead of queued body in the loop callback
   EXPECT_CALL(*codec_, generatePingReply(_, _));
   EXPECT_CALL(*codec_, generateBody(_, _, _, _, true));
-  EXPECT_CALL(handler1, detachTransaction());
+  EXPECT_CALL(handler1, _detachTransaction());
 
   codecCallback_->onMessageBegin(HTTPCodec::StreamID(1), req1.get());
   codecCallback_->onHeadersComplete(HTTPCodec::StreamID(1), std::move(req1));
@@ -707,24 +708,24 @@ TEST_F(MockCodecDownstreamTest, FlowControlAbort) {
   EXPECT_CALL(mockController_, getRequestHandler(_, _))
       .WillOnce(Return(&handler1));
 
-  EXPECT_CALL(handler1, setTransaction(_))
+  EXPECT_CALL(handler1, _setTransaction(_))
       .WillOnce(
           Invoke([&handler1](HTTPTransaction* txn) { handler1.txn_ = txn; }));
-  EXPECT_CALL(handler1, onHeadersComplete(_))
+  EXPECT_CALL(handler1, _onHeadersComplete(_))
       .WillOnce(
           InvokeWithoutArgs([&handler1]() { handler1.txn_->sendAbort(); }));
 
   // Header egresses immediately
-  EXPECT_CALL(handler1, detachTransaction());
+  EXPECT_CALL(handler1, _detachTransaction());
 
   codecCallback_->onMessageBegin(HTTPCodec::StreamID(1), req1.get());
   codecCallback_->onHeadersComplete(HTTPCodec::StreamID(1), std::move(req1));
-  EXPECT_CALL(*codec_, generateWindowUpdate(_, 0, spdy::kInitialWindow));
+  EXPECT_CALL(*codec_, generateWindowUpdate(_, 0, http2::kInitialWindow));
   codecCallback_->onBody(
-      HTTPCodec::StreamID(1), makeBuf(spdy::kInitialWindow), 0);
-  EXPECT_CALL(*codec_, generateWindowUpdate(_, 0, spdy::kInitialWindow));
+      HTTPCodec::StreamID(1), makeBuf(http2::kInitialWindow), 0);
+  EXPECT_CALL(*codec_, generateWindowUpdate(_, 0, http2::kInitialWindow));
   codecCallback_->onBody(
-      HTTPCodec::StreamID(1), makeBuf(spdy::kInitialWindow), 0);
+      HTTPCodec::StreamID(1), makeBuf(http2::kInitialWindow), 0);
 
   eventBase_.loop();
 
@@ -746,10 +747,10 @@ TEST_F(MockCodecDownstreamTest, Buffering) {
   EXPECT_CALL(mockController_, getRequestHandler(_, _))
       .WillOnce(Return(&handler));
 
-  EXPECT_CALL(handler, setTransaction(_))
+  EXPECT_CALL(handler, _setTransaction(_))
       .WillOnce(
           Invoke([&handler](HTTPTransaction* txn) { handler.txn_ = txn; }));
-  EXPECT_CALL(handler, onHeadersComplete(_))
+  EXPECT_CALL(handler, _onHeadersComplete(_))
       .WillOnce(
           InvokeWithoutArgs([&handler]() { handler.txn_->pauseIngress(); }));
 
@@ -765,13 +766,13 @@ TEST_F(MockCodecDownstreamTest, Buffering) {
   }
   codecCallback_->onMessageComplete(HTTPCodec::StreamID(1), false);
 
-  EXPECT_CALL(handler, onBodyWithOffset(_, _))
+  EXPECT_CALL(handler, _onBodyWithOffset(_, _))
       .WillOnce(ExpectString(chunkStr))
       .WillOnce(ExpectString(chunkStr));
 
-  EXPECT_CALL(handler, onEOM());
+  EXPECT_CALL(handler, _onEOM());
 
-  EXPECT_CALL(handler, detachTransaction());
+  EXPECT_CALL(handler, _detachTransaction());
 
   eventBase_.tryRunAfterDelay(
       [&handler, this] {
@@ -786,7 +787,7 @@ TEST_F(MockCodecDownstreamTest, Buffering) {
   eventBase_.loop();
 }
 
-TEST_F(MockCodecDownstreamTest, SpdyWindow) {
+TEST_F(MockCodecDownstreamTest, FlowControlWindow) {
   // Test window updates
   MockHTTPHandler handler1;
   auto req1 = makeGetRequest();
@@ -798,20 +799,20 @@ TEST_F(MockCodecDownstreamTest, SpdyWindow) {
     EXPECT_CALL(mockController_, getRequestHandler(_, _))
         .WillOnce(Return(&handler1));
 
-    EXPECT_CALL(handler1, setTransaction(_))
+    EXPECT_CALL(handler1, _setTransaction(_))
         .WillOnce(
             Invoke([&handler1](HTTPTransaction* txn) { handler1.txn_ = txn; }));
-    EXPECT_CALL(handler1, onHeadersComplete(_))
+    EXPECT_CALL(handler1, _onHeadersComplete(_))
         .WillOnce(InvokeWithoutArgs([this]() {
           codecCallback_->onSettings({{SettingsId::INITIAL_WINDOW_SIZE, 4000}});
         }));
     EXPECT_CALL(*codec_, generateSettingsAck(_));
-    EXPECT_CALL(handler1, onEOM()).WillOnce(InvokeWithoutArgs([&handler1]() {
+    EXPECT_CALL(handler1, _onEOM()).WillOnce(InvokeWithoutArgs([&handler1]() {
       handler1.sendHeaders(200, 16000);
       handler1.sendBody(12000);
       // 12kb buffered -> pause upstream
     }));
-    EXPECT_CALL(handler1, onEgressPaused())
+    EXPECT_CALL(handler1, _onEgressPaused())
         .WillOnce(InvokeWithoutArgs([this]() {
           eventBase_.runInLoop([this] {
             // triggers 4k send, 8kb buffered, handler still paused
@@ -830,23 +831,23 @@ TEST_F(MockCodecDownstreamTest, SpdyWindow) {
               },
               20);
         }));
-    EXPECT_CALL(handler1, onEgressResumed())
+    EXPECT_CALL(handler1, _onEgressResumed())
         .WillOnce(InvokeWithoutArgs([&handler1]() {
           handler1.sendBody(4000);
           // 2kb send, 2kb buffered => pause upstream
         }));
-    EXPECT_CALL(handler1, onEgressPaused())
+    EXPECT_CALL(handler1, _onEgressPaused())
         .WillOnce(InvokeWithoutArgs([this]() {
           eventBase_.runInLoop([this] {
             // triggers 2kb send, resume
             codecCallback_->onWindowUpdate(1, 4000);
           });
         }));
-    EXPECT_CALL(handler1, onEgressResumed())
+    EXPECT_CALL(handler1, _onEgressResumed())
         .WillOnce(
             InvokeWithoutArgs([&handler1]() { handler1.txn_->sendEOM(); }));
 
-    EXPECT_CALL(handler1, detachTransaction());
+    EXPECT_CALL(handler1, _detachTransaction());
 
     codecCallback_->onMessageBegin(HTTPCodec::StreamID(1), req1.get());
     codecCallback_->onHeadersComplete(HTTPCodec::StreamID(1), std::move(req1));
@@ -871,7 +872,7 @@ TEST_F(MockCodecDownstreamTest, SpdyWindow) {
 }
 
 TEST_F(MockCodecDownstreamTest, DoubleResume) {
-  // Test spdy ping mechanism and egress re-ordering
+  // Test ping mechanism and egress re-ordering
   MockHTTPHandler handler1;
   auto req1 = makePostRequest(5);
   auto buf = makeBuf(5);
@@ -882,16 +883,16 @@ TEST_F(MockCodecDownstreamTest, DoubleResume) {
   EXPECT_CALL(mockController_, getRequestHandler(_, _))
       .WillOnce(Return(&handler1));
 
-  EXPECT_CALL(handler1, setTransaction(_))
+  EXPECT_CALL(handler1, _setTransaction(_))
       .WillOnce(
           Invoke([&handler1](HTTPTransaction* txn) { handler1.txn_ = txn; }));
-  EXPECT_CALL(handler1, onHeadersComplete(_))
+  EXPECT_CALL(handler1, _onHeadersComplete(_))
       .WillOnce(InvokeWithoutArgs([&handler1, this] {
         handler1.txn_->pauseIngress();
         eventBase_.tryRunAfterDelay(
             [&handler1] { handler1.txn_->resumeIngress(); }, 50);
       }));
-  EXPECT_CALL(handler1, onBodyWithOffset(_, _))
+  EXPECT_CALL(handler1, _onBodyWithOffset(_, _))
       .WillOnce(Invoke(
           [&handler1, &bufStr](uint64_t, std::shared_ptr<folly::IOBuf> chain) {
             EXPECT_EQ(bufStr, chain->moveToFbString());
@@ -899,10 +900,10 @@ TEST_F(MockCodecDownstreamTest, DoubleResume) {
             handler1.txn_->resumeIngress();
           }));
 
-  EXPECT_CALL(handler1, onEOM()).WillOnce(InvokeWithoutArgs([&handler1]() {
+  EXPECT_CALL(handler1, _onEOM()).WillOnce(InvokeWithoutArgs([&handler1]() {
     handler1.sendReplyWithBody(200, 100, false);
   }));
-  EXPECT_CALL(handler1, detachTransaction());
+  EXPECT_CALL(handler1, _detachTransaction());
 
   codecCallback_->onMessageBegin(HTTPCodec::StreamID(1), req1.get());
   codecCallback_->onHeadersComplete(HTTPCodec::StreamID(1), std::move(req1));
@@ -927,7 +928,7 @@ void MockCodecDownstreamTest::testConnFlowControlBlocked(bool timeout) {
   // control frames still can be processed
   NiceMock<MockHTTPHandler> handler1;
   NiceMock<MockHTTPHandler> handler2;
-  auto wantToWrite = spdy::kInitialWindow + 50000;
+  auto wantToWrite = http2::kInitialWindow + 50000;
   auto wantToWriteStr = folly::to<string>(wantToWrite);
   auto req1 = makeGetRequest();
   auto req2 = makeGetRequest();
@@ -939,8 +940,9 @@ void MockCodecDownstreamTest::testConnFlowControlBlocked(bool timeout) {
 
   EXPECT_CALL(mockController_, getRequestHandler(_, _))
       .WillOnce(Return(&handler1));
-  EXPECT_CALL(handler1, setTransaction(_)).WillOnce(SaveArg<0>(&handler1.txn_));
-  EXPECT_CALL(handler1, onHeadersComplete(_));
+  EXPECT_CALL(handler1, _setTransaction(_))
+      .WillOnce(SaveArg<0>(&handler1.txn_));
+  EXPECT_CALL(handler1, _onHeadersComplete(_));
   EXPECT_CALL(*codec_, generateHeader(_, 1, _, _, _, _))
       .WillOnce(
           Invoke([](folly::IOBufQueue& writeBuf,
@@ -967,13 +969,14 @@ void MockCodecDownstreamTest::testConnFlowControlBlocked(bool timeout) {
   handler1.txn_->sendHeaders(*resp1);
   handler1.txn_->sendBody(makeBuf(wantToWrite)); // conn blocked, stream open
   handler1.txn_->sendEOM();
-  eventBase_.loop();                       // actually send (most of) the body
-  CHECK_EQ(bodyLen, spdy::kInitialWindow); // should have written a full window
+  eventBase_.loopOnce();                    // actually send (most of) the body
+  CHECK_EQ(bodyLen, http2::kInitialWindow); // should have written a full window
 
   EXPECT_CALL(mockController_, getRequestHandler(_, _))
       .WillOnce(Return(&handler2));
-  EXPECT_CALL(handler2, setTransaction(_)).WillOnce(SaveArg<0>(&handler2.txn_));
-  EXPECT_CALL(handler2, onHeadersComplete(_));
+  EXPECT_CALL(handler2, _setTransaction(_))
+      .WillOnce(SaveArg<0>(&handler2.txn_));
+  EXPECT_CALL(handler2, _onHeadersComplete(_));
   EXPECT_CALL(*codec_, generateHeader(_, 3, _, _, _, _))
       .WillOnce(
           Invoke([](folly::IOBufQueue& writeBuf,
@@ -990,17 +993,17 @@ void MockCodecDownstreamTest::testConnFlowControlBlocked(bool timeout) {
   codecCallback_->onHeadersComplete(3, std::move(req2));
   handler2.txn_->sendHeaders(*resp2);
 
-  eventBase_.loop();
+  eventBase_.loopOnce();
 
   EXPECT_EQ(writeCount + 1, writeCount_);
 
   if (timeout) {
     // don't send a window update, the handlers will get timeouts
-    EXPECT_CALL(handler1, onError(_))
+    EXPECT_CALL(handler1, _onError(_))
         .WillOnce(Invoke([](const HTTPException& ex) {
           EXPECT_EQ(ex.getProxygenError(), kErrorTimeout);
         }));
-    EXPECT_CALL(handler2, onError(_))
+    EXPECT_CALL(handler2, _onError(_))
         .WillOnce(Invoke([](const HTTPException& ex) {
           EXPECT_EQ(ex.getProxygenError(), kErrorTimeout);
         }));
@@ -1010,22 +1013,20 @@ void MockCodecDownstreamTest::testConnFlowControlBlocked(bool timeout) {
     // silly, the timeout set is internal and there's no fd, so hold the
     // eventBase open until the timeout can fire
     eventBase_.runAfterDelay([] {}, 500);
-
-    transactionTimeouts_->cancelAll();
   } else {
     // Give a connection level window update of 10 bytes -- this
     // should allow 10 bytes of the txn1 response to be written
     codecCallback_->onWindowUpdate(0, 10);
     EXPECT_CALL(*codec_,
                 generateBody(_, 1, PtrBufHasLen(uint64_t(10)), _, false));
-    eventBase_.loop();
+    eventBase_.loopOnce();
 
     // Just tear everything down now.
-    EXPECT_CALL(handler1, detachTransaction());
+    EXPECT_CALL(handler1, _detachTransaction());
     codecCallback_->onAbort(handler1.txn_->getID(), ErrorCode::INTERNAL_ERROR);
-    eventBase_.loop();
+    eventBase_.loopOnce();
 
-    EXPECT_CALL(handler2, detachTransaction());
+    EXPECT_CALL(handler2, _detachTransaction());
     EXPECT_CALL(mockController_, detachSession(_));
     httpSession_->dropConnection();
   }
@@ -1047,30 +1048,31 @@ TEST_F(MockCodecDownstreamTest, UnpausedLargePost) {
   InSequence enforceOrder;
   NiceMock<MockHTTPHandler> handler1;
   unsigned kNumChunks = 10;
-  auto wantToWrite = spdy::kInitialWindow * kNumChunks;
+  auto wantToWrite = http2::kInitialWindow * kNumChunks;
   auto wantToWriteStr = folly::to<string>(wantToWrite);
   auto req1 = makePostRequest(wantToWrite);
   auto req1Body = makeBuf(wantToWrite);
 
   EXPECT_CALL(mockController_, getRequestHandler(_, _))
       .WillOnce(Return(&handler1));
-  EXPECT_CALL(handler1, setTransaction(_)).WillOnce(SaveArg<0>(&handler1.txn_));
+  EXPECT_CALL(handler1, _setTransaction(_))
+      .WillOnce(SaveArg<0>(&handler1.txn_));
 
-  EXPECT_CALL(handler1, onHeadersComplete(_));
+  EXPECT_CALL(handler1, _onHeadersComplete(_));
   for (unsigned i = 0; i < kNumChunks; ++i) {
-    EXPECT_CALL(*codec_, generateWindowUpdate(_, 0, spdy::kInitialWindow));
+    EXPECT_CALL(*codec_, generateWindowUpdate(_, 0, http2::kInitialWindow));
     EXPECT_CALL(handler1,
-                onBodyWithOffset(_, PtrBufHasLen(spdy::kInitialWindow)));
-    EXPECT_CALL(*codec_, generateWindowUpdate(_, 1, spdy::kInitialWindow));
+                _onBodyWithOffset(_, PtrBufHasLen(http2::kInitialWindow)));
+    EXPECT_CALL(*codec_, generateWindowUpdate(_, 1, http2::kInitialWindow));
   }
-  EXPECT_CALL(handler1, onEOM());
+  EXPECT_CALL(handler1, _onEOM());
 
   codecCallback_->onMessageBegin(1, req1.get());
   codecCallback_->onHeadersComplete(1, std::move(req1));
   // Give kNumChunks chunks, each of the maximum window size. We should generate
   // window update for each chunk
   for (unsigned i = 0; i < kNumChunks; ++i) {
-    codecCallback_->onBody(1, makeBuf(spdy::kInitialWindow), 0);
+    codecCallback_->onBody(1, makeBuf(http2::kInitialWindow), 0);
   }
   codecCallback_->onMessageComplete(1, false);
 
@@ -1085,7 +1087,7 @@ TEST_F(MockCodecDownstreamTest, IngressPausedWindowUpdate) {
   InSequence enforceOrder;
   NiceMock<MockHTTPHandler> handler1;
   auto req = makeGetRequest();
-  size_t respSize = spdy::kInitialWindow * 10;
+  size_t respSize = http2::kInitialWindow * 10;
   unique_ptr<HTTPMessage> resp;
   unique_ptr<folly::IOBuf> respBody;
   tie(resp, respBody) = makeResponse(200, respSize);
@@ -1093,12 +1095,14 @@ TEST_F(MockCodecDownstreamTest, IngressPausedWindowUpdate) {
 
   EXPECT_CALL(mockController_, getRequestHandler(_, _))
       .WillOnce(Return(&handler1));
-  EXPECT_CALL(handler1, setTransaction(_)).WillOnce(SaveArg<0>(&handler1.txn_));
+  EXPECT_CALL(handler1, _setTransaction(_))
+      .WillOnce(SaveArg<0>(&handler1.txn_));
 
-  EXPECT_CALL(handler1, onHeadersComplete(_)).WillOnce(InvokeWithoutArgs([&]() {
-    // Pause ingress. Make sure we process the window updates anyway
-    handler1.txn_->pauseIngress();
-  }));
+  EXPECT_CALL(handler1, _onHeadersComplete(_))
+      .WillOnce(InvokeWithoutArgs([&]() {
+        // Pause ingress. Make sure we process the window updates anyway
+        handler1.txn_->pauseIngress();
+      }));
   EXPECT_CALL(*codec_, generateHeader(_, _, _, _, _, _));
   EXPECT_CALL(*codec_, generateBody(_, _, _, _, _))
       .WillRepeatedly(Invoke([&](folly::IOBufQueue&,
@@ -1141,9 +1145,9 @@ TEST_F(MockCodecDownstreamTest, ShutdownThenSendPushHeaders) {
 
   EXPECT_CALL(mockController_, getRequestHandler(_, _))
       .WillOnce(Return(&handler));
-  EXPECT_CALL(handler, setTransaction(_)).WillOnce(SaveArg<0>(&handler.txn_));
+  EXPECT_CALL(handler, _setTransaction(_)).WillOnce(SaveArg<0>(&handler.txn_));
 
-  EXPECT_CALL(handler, onHeadersComplete(_))
+  EXPECT_CALL(handler, _onHeadersComplete(_))
       .WillOnce(Invoke([&](std::shared_ptr<HTTPMessage>) {
         auto pushTxn = handler.txn_->newPushedTransaction(&pushHandler);
         // start shutdown process
@@ -1156,15 +1160,15 @@ TEST_F(MockCodecDownstreamTest, ShutdownThenSendPushHeaders) {
         EXPECT_TRUE(codec_->isReusable());
         pushTxn->sendEOM();
       }));
-  EXPECT_CALL(pushHandler, setTransaction(_))
+  EXPECT_CALL(pushHandler, _setTransaction(_))
       .WillOnce(SaveArg<0>(&pushHandler.txn_));
   EXPECT_CALL(*codec_, generatePushPromise(_, 2, _, _, _, _));
   EXPECT_CALL(*codec_, generateEOM(_, 2));
-  EXPECT_CALL(pushHandler, detachTransaction());
-  EXPECT_CALL(handler, onEOM()).WillOnce(Invoke([&] { handler.sendReply(); }));
+  EXPECT_CALL(pushHandler, _detachTransaction());
+  EXPECT_CALL(handler, _onEOM()).WillOnce(Invoke([&] { handler.sendReply(); }));
   EXPECT_CALL(*codec_, generateHeader(_, 1, _, _, _, _));
   EXPECT_CALL(*codec_, generateEOM(_, 1));
-  EXPECT_CALL(handler, detachTransaction());
+  EXPECT_CALL(handler, _detachTransaction());
 
   codecCallback_->onMessageBegin(1, req.get());
   codecCallback_->onHeadersComplete(1, std::move(req));
@@ -1227,15 +1231,16 @@ void MockCodecDownstreamTest::testGoaway(bool doubleGoaway,
   if (doubleGoaway) {
     EXPECT_CALL(mockController_, getRequestHandler(_, _))
         .WillOnce(Return(&handler));
-    EXPECT_CALL(handler, setTransaction(_)).WillOnce(SaveArg<0>(&handler.txn_));
+    EXPECT_CALL(handler, _setTransaction(_))
+        .WillOnce(SaveArg<0>(&handler.txn_));
 
-    EXPECT_CALL(handler, onHeadersComplete(_));
-    EXPECT_CALL(handler, onEOM()).WillOnce(Invoke([&] {
+    EXPECT_CALL(handler, _onHeadersComplete(_));
+    EXPECT_CALL(handler, _onEOM()).WillOnce(Invoke([&] {
       handler.sendReply();
     }));
     EXPECT_CALL(*codec_, generateHeader(_, 1, _, _, _, _));
     EXPECT_CALL(*codec_, generateEOM(_, 1));
-    EXPECT_CALL(handler, detachTransaction());
+    EXPECT_CALL(handler, _detachTransaction());
 
     // Turn on double GOAWAY drain
     codec_->enableDoubleGoawayDrain();
@@ -1256,13 +1261,20 @@ void MockCodecDownstreamTest::testGoaway(bool doubleGoaway,
   }
 
   folly::AsyncTransport::WriteCallback* cb = nullptr;
-  EXPECT_CALL(*transport_, writeChain(_, _, _))
-      .WillOnce(Invoke([&](folly::AsyncTransport::WriteCallback* callback,
-                           const shared_ptr<IOBuf>,
-                           WriteFlags) {
-        // don't immediately flush the goaway
-        cb = callback;
-      }));
+  {
+    InSequence enforceOrder;
+    EXPECT_CALL(*transport_, writeChain(_, _, _))
+        .WillOnce(Invoke([&](folly::AsyncTransport::WriteCallback* callback,
+                             const shared_ptr<IOBuf>,
+                             WriteFlags) {
+          // don't immediately flush the goaway
+          cb = callback;
+        }));
+    if (doubleGoaway && !dropConnection) {
+      EXPECT_CALL(*transport_, writeChain(_, _, _))
+          .WillOnce(Invoke(this, &MockCodecDownstreamTest::onWriteChain));
+    }
+  }
   if (doubleGoaway || !dropConnection) {
     // single goaway, drop connection doesn't get onIngressEOF
     EXPECT_CALL(*codec_, onIngressEOF());

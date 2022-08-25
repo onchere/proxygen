@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -27,6 +27,7 @@
 #include <proxygen/lib/http/codec/HTTPCodecFilter.h>
 #include <proxygen/lib/http/session/ByteEventTracker.h>
 #include <proxygen/lib/http/session/HTTPEvent.h>
+#include <proxygen/lib/http/session/HTTPSessionActivityTracker.h>
 #include <proxygen/lib/http/session/HTTPSessionBase.h>
 #include <proxygen/lib/http/session/HTTPTransaction.h>
 #include <proxygen/lib/http/session/SecondaryAuthManagerBase.h>
@@ -61,6 +62,15 @@ class HTTPSession
 
   HTTPTransaction::Transport::Type getType() const noexcept override {
     return HTTPTransaction::Transport::Type::TCP;
+  }
+
+  void setHTTPSessionActivityTracker(std::unique_ptr<HTTPSessionActivityTracker>
+                                         httpSessionActivityTracker) override {
+    if (!getByteEventTracker()) {
+      setByteEventTracker(std::make_shared<ByteEventTracker>(this));
+    }
+    HTTPSessionBase::setHTTPSessionActivityTracker(
+        std::move(httpSessionActivityTracker));
   }
 
   folly::AsyncTransport* getTransport() override {
@@ -283,8 +293,6 @@ class HTTPSession
   bool isDraining() const override {
     return draining_;
   }
-
-  virtual void injectTraceEventIntoAllTransactions(TraceEvent& event) override;
 
   bool readsUnpaused() const {
     return reads_ == SocketState::UNPAUSED;
@@ -561,7 +569,8 @@ class HTTPSession
    */
   void shutdownTransport(bool shutdownReads = true,
                          bool shutdownWrites = true,
-                         const std::string& errorMsg = "");
+                         const std::string& errorMsg = "",
+                         ProxygenError error = kErrorEOF);
 
   /**
    * Immediately close the socket in both directions, discarding any
@@ -973,6 +982,8 @@ class HTTPSession
 
   std::shared_ptr<ByteEventTracker> byteEventTracker_{nullptr};
 
+  std::unique_ptr<HTTPSessionActivityTracker> httpSessionActivityTracker_;
+
   HTTPTransaction* lastTxn_{nullptr};
 
   /**
@@ -1099,7 +1110,6 @@ class HTTPSession
   bool resetSocketOnShutdown_ : 1;
   // indicates a fatal error that prevents further ingress data processing
   bool inLoopCallback_ : 1;
-  bool inResume_ : 1;
   bool pendingPause_ : 1;
   bool writeBufSplit_ : 1;
 

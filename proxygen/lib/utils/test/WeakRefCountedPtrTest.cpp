@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -17,8 +17,8 @@ namespace proxygen { namespace test {
 
 class TestClass : public EnableWeakRefCountedPtr<TestClass> {
  public:
-  MOCK_METHOD0(onWeakRefCountedPtrCreate, void());
-  MOCK_METHOD0(onWeakRefCountedPtrDestroy, void());
+  MOCK_METHOD(void, onWeakRefCountedPtrCreate, ());
+  MOCK_METHOD(void, onWeakRefCountedPtrDestroy, ());
 };
 
 class TestDerivedClass : public TestClass {

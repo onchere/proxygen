@@ -1,17 +1,18 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-#include "proxygen/lib/http/stats/ThreadLocalHTTPSessionStats.h"
+#include <proxygen/lib/http/stats/ThreadLocalHTTPSessionStats.h>
 
 namespace proxygen {
 
 TLHTTPSessionStats::TLHTTPSessionStats(const std::string& prefix)
     : txnsOpen(prefix + "_transactions_open"),
+      pendingBufferedReadBytes(prefix + "_pending_buffered_read_bytes"),
       txnsOpened(
           prefix + "_txn_opened", facebook::fb303::SUM, facebook::fb303::RATE),
       txnsFromSessionReuse(prefix + "_txn_session_reuse",
@@ -23,6 +24,10 @@ TLHTTPSessionStats::TLHTTPSessionStats(const std::string& prefix)
       txnsSessionStalled(prefix + "_txn_session_stall",
                          facebook::fb303::SUM,
                          facebook::fb303::RATE),
+      egressContentLengthMismatches(
+          prefix + "_egress_content_length_mismatches",
+          facebook::fb303::SUM,
+          facebook::fb303::RATE),
       presendIoSplit(prefix + "_presend_io_split",
                      facebook::fb303::SUM,
                      facebook::fb303::RATE),
@@ -154,6 +159,15 @@ void TLHTTPSessionStats::recordTransactionStalled() noexcept {
 
 void TLHTTPSessionStats::recordSessionStalled() noexcept {
   txnsSessionStalled.add(1);
+}
+
+void TLHTTPSessionStats::recordEgressContentLengthMismatches() noexcept {
+  egressContentLengthMismatches.add(1);
+}
+
+void TLHTTPSessionStats::recordPendingBufferedReadBytes(
+    int64_t amount) noexcept {
+  pendingBufferedReadBytes.incrementValue(amount);
 }
 
 } // namespace proxygen

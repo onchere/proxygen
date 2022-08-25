@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -104,8 +104,8 @@ bool HTTPDownstreamSession::onNativeProtocolUpgrade(
   CHECK(txn);
   if (txn->canSendHeaders()) {
     // Create the new Codec
-    auto codec =
-        HTTPCodecFactory::getCodec(protocol, TransportDirection::DOWNSTREAM);
+    auto codec = HTTPCodecFactory::getCodec(
+        protocol, TransportDirection::DOWNSTREAM, /*strictValidation=*/true);
     CHECK(codec);
     if (!codec->onIngressUpgradeMessage(msg)) {
       VLOG(4) << *this << " codec rejected upgrade";

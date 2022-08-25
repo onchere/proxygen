@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -37,12 +37,16 @@ class TLHTTPSessionStats : public HTTPSessionStats {
   void recordSessionIdleTime(std::chrono::seconds) noexcept override;
   void recordTransactionStalled() noexcept override;
   void recordSessionStalled() noexcept override;
+  void recordPendingBufferedReadBytes(int64_t amount) noexcept override;
+  void recordEgressContentLengthMismatches() noexcept override;
 
   BaseStats::TLCounter txnsOpen;
+  BaseStats::TLCounter pendingBufferedReadBytes;
   BaseStats::TLTimeseries txnsOpened;
   BaseStats::TLTimeseries txnsFromSessionReuse;
   BaseStats::TLTimeseries txnsTransactionStalled;
   BaseStats::TLTimeseries txnsSessionStalled;
+  BaseStats::TLTimeseries egressContentLengthMismatches;
   // Time to Last Byte Ack (TTLBA)
   BaseStats::TLTimeseries presendIoSplit;
   BaseStats::TLTimeseries presendExceedLimit;

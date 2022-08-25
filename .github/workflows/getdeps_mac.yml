@@ -5,26 +5,26 @@ name: mac
 on:
   push:
     branches:
-    - master
+    - main
   pull_request:
     branches:
-    - master
+    - main
 
 jobs:
   build:
     runs-on: macOS-latest
     steps:
-    - uses: actions/checkout@v1
-    - name: Fetch zlib
-      run: python3 build/fbcode_builder/getdeps.py fetch --no-tests zlib
-    - name: Fetch boost
-      run: python3 build/fbcode_builder/getdeps.py fetch --no-tests boost
-    - name: Fetch openssl
-      run: python3 build/fbcode_builder/getdeps.py fetch --no-tests openssl
+    - uses: actions/checkout@v2
     - name: Fetch ninja
       run: python3 build/fbcode_builder/getdeps.py fetch --no-tests ninja
     - name: Fetch cmake
       run: python3 build/fbcode_builder/getdeps.py fetch --no-tests cmake
+    - name: Fetch zlib
+      run: python3 build/fbcode_builder/getdeps.py fetch --no-tests zlib
+    - name: Fetch zstd
+      run: python3 build/fbcode_builder/getdeps.py fetch --no-tests zstd
+    - name: Fetch boost
+      run: python3 build/fbcode_builder/getdeps.py fetch --no-tests boost
     - name: Fetch double-conversion
       run: python3 build/fbcode_builder/getdeps.py fetch --no-tests double-conversion
     - name: Fetch fmt
@@ -35,16 +35,14 @@ jobs:
       run: python3 build/fbcode_builder/getdeps.py fetch --no-tests glog
     - name: Fetch googletest
       run: python3 build/fbcode_builder/getdeps.py fetch --no-tests googletest
-    - name: Fetch libevent
-      run: python3 build/fbcode_builder/getdeps.py fetch --no-tests libevent
     - name: Fetch lz4
       run: python3 build/fbcode_builder/getdeps.py fetch --no-tests lz4
+    - name: Fetch openssl
+      run: python3 build/fbcode_builder/getdeps.py fetch --no-tests openssl
     - name: Fetch snappy
       run: python3 build/fbcode_builder/getdeps.py fetch --no-tests snappy
-    - name: Fetch zstd
-      run: python3 build/fbcode_builder/getdeps.py fetch --no-tests zstd
-    - name: Fetch folly
-      run: python3 build/fbcode_builder/getdeps.py fetch --no-tests folly
+    - name: Fetch libevent
+      run: python3 build/fbcode_builder/getdeps.py fetch --no-tests libevent
     - name: Fetch autoconf
       run: python3 build/fbcode_builder/getdeps.py fetch --no-tests autoconf
     - name: Fetch automake
@@ -55,22 +53,26 @@ jobs:
       run: python3 build/fbcode_builder/getdeps.py fetch --no-tests gperf
     - name: Fetch libsodium
       run: python3 build/fbcode_builder/getdeps.py fetch --no-tests libsodium
+    - name: Fetch xz
+      run: python3 build/fbcode_builder/getdeps.py fetch --no-tests xz
+    - name: Fetch folly
+      run: python3 build/fbcode_builder/getdeps.py fetch --no-tests folly
     - name: Fetch fizz
       run: python3 build/fbcode_builder/getdeps.py fetch --no-tests fizz
     - name: Fetch mvfst
       run: python3 build/fbcode_builder/getdeps.py fetch --no-tests mvfst
     - name: Fetch wangle
       run: python3 build/fbcode_builder/getdeps.py fetch --no-tests wangle
-    - name: Build zlib
-      run: python3 build/fbcode_builder/getdeps.py build --no-tests zlib
-    - name: Build boost
-      run: python3 build/fbcode_builder/getdeps.py build --no-tests boost
-    - name: Build openssl
-      run: python3 build/fbcode_builder/getdeps.py build --no-tests openssl
     - name: Build ninja
       run: python3 build/fbcode_builder/getdeps.py build --no-tests ninja
     - name: Build cmake
       run: python3 build/fbcode_builder/getdeps.py build --no-tests cmake
+    - name: Build zlib
+      run: python3 build/fbcode_builder/getdeps.py build --no-tests zlib
+    - name: Build zstd
+      run: python3 build/fbcode_builder/getdeps.py build --no-tests zstd
+    - name: Build boost
+      run: python3 build/fbcode_builder/getdeps.py build --no-tests boost
     - name: Build double-conversion
       run: python3 build/fbcode_builder/getdeps.py build --no-tests double-conversion
     - name: Build fmt
@@ -81,16 +83,14 @@ jobs:
       run: python3 build/fbcode_builder/getdeps.py build --no-tests glog
     - name: Build googletest
       run: python3 build/fbcode_builder/getdeps.py build --no-tests googletest
-    - name: Build libevent
-      run: python3 build/fbcode_builder/getdeps.py build --no-tests libevent
     - name: Build lz4
       run: python3 build/fbcode_builder/getdeps.py build --no-tests lz4
+    - name: Build openssl
+      run: python3 build/fbcode_builder/getdeps.py build --no-tests openssl
     - name: Build snappy
       run: python3 build/fbcode_builder/getdeps.py build --no-tests snappy
-    - name: Build zstd
-      run: python3 build/fbcode_builder/getdeps.py build --no-tests zstd
-    - name: Build folly
-      run: python3 build/fbcode_builder/getdeps.py build --no-tests folly
+    - name: Build libevent
+      run: python3 build/fbcode_builder/getdeps.py build --no-tests libevent
     - name: Build autoconf
       run: python3 build/fbcode_builder/getdeps.py build --no-tests autoconf
     - name: Build automake
@@ -101,6 +101,10 @@ jobs:
       run: python3 build/fbcode_builder/getdeps.py build --no-tests gperf
     - name: Build libsodium
       run: python3 build/fbcode_builder/getdeps.py build --no-tests libsodium
+    - name: Build xz
+      run: python3 build/fbcode_builder/getdeps.py build --no-tests xz
+    - name: Build folly
+      run: python3 build/fbcode_builder/getdeps.py build --no-tests folly
     - name: Build fizz
       run: python3 build/fbcode_builder/getdeps.py build --no-tests fizz
     - name: Build mvfst
@@ -111,7 +115,7 @@ jobs:
       run: python3 build/fbcode_builder/getdeps.py build --src-dir=. proxygen  --project-install-prefix proxygen:/usr/local
     - name: Copy artifacts
       run: python3 build/fbcode_builder/getdeps.py fixup-dyn-deps --src-dir=. proxygen _artifacts/mac  --project-install-prefix proxygen:/usr/local --final-install-prefix /usr/local
-    - uses: actions/upload-artifact@master
+    - uses: actions/upload-artifact@v2
       with:
         name: proxygen
         path: _artifacts

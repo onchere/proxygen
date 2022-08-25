@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -69,7 +69,8 @@ void HQConnector::connect(
           .setFizzClientContext(fizzContext)
           .setCertificateVerifier(std::move(verifier))
           .setPskCache(quicPskCache_)
-          .build());
+          .build(),
+      useConnectionEndWithErrorCallback_);
   quicClient->setHostname(sni.value_or(connectAddr.getAddressStr()));
   quicClient->addNewPeerAddress(connectAddr);
   if (localAddr.hasValue()) {
@@ -86,8 +87,7 @@ void HQConnector::connect(
                                              connectTimeout,
                                              nullptr, // controller
                                              wangle::TransportInfo(),
-                                             nullptr,  // InfoCallback
-                                             nullptr); // codecfiltercallback
+                                             nullptr); // InfoCallback
 
   session_->setSocket(quicClient);
   session_->setConnectCallback(this);
@@ -95,7 +95,7 @@ void HQConnector::connect(
 
   VLOG(4) << "connecting to " << connectAddr.describe();
   connectStart_ = getCurrentTime();
-  quicClient->start(session_);
+  quicClient->start(session_, session_);
 }
 
 void HQConnector::onReplaySafe() noexcept {
@@ -107,12 +107,11 @@ void HQConnector::onReplaySafe() noexcept {
   }
 }
 
-void HQConnector::connectError(
-    std::pair<quic::QuicErrorCode, std::string> error) noexcept {
+void HQConnector::connectError(quic::QuicError error) noexcept {
   CHECK(session_);
   reset();
   if (cb_) {
-    cb_->connectError(error.first);
+    cb_->connectError(error.code);
   }
 }
 

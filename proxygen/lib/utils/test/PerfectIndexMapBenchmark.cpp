@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -13,7 +13,6 @@
 #include <proxygen/lib/utils/PerfectIndexMap.h>
 #include <unordered_map>
 
-using namespace folly;
 using namespace proxygen;
 
 // buck build @mode/opt proxygen/lib/utils/test:perfect_index_map_benchmark

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -12,7 +12,7 @@
 #include <folly/io/SocketOptionMap.h>
 #include <proxygen/lib/utils/Time.h>
 
-#include "proxygen/lib/healthcheck/ServerHealthCheckerCallback.h"
+#include <proxygen/lib/healthcheck/ServerHealthCheckerCallback.h>
 
 namespace proxygen {
 

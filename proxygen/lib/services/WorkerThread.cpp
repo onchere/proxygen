@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -8,17 +8,16 @@
 
 #include <proxygen/lib/services/WorkerThread.h>
 
-#include "folly/io/async/EventBase.h"
+#include <folly/io/async/EventBase.h>
 
 #include <folly/Portability.h>
 #include <folly/String.h>
+#include <folly/experimental/io/IoUringBackend.h>
 #include <folly/io/async/EventBaseManager.h>
 #include <glog/logging.h>
 #include <signal.h>
 
-#if defined(__linux__) && !FOLLY_MOBILE && \
-    __has_include(<folly/experimental/io/IoUringBackend.h>)
-#include <folly/experimental/io/IoUringBackend.h>
+#if !FOLLY_MOBILE && __has_include(<liburing.h>)
 
 DEFINE_int32(pwt_io_uring_capacity, -1, "io_uring backend capacity");
 DEFINE_int32(pwt_io_uring_max_submit, 128, "io_uring backend max submit");
@@ -51,12 +50,15 @@ std::unique_ptr<folly::EventBaseBackendBase> getEventBaseBackend() {
   return folly::EventBase::getDefaultBackend();
 }
 } // namespace
+
 #else
+
 namespace {
 std::unique_ptr<folly::EventBaseBackendBase> getEventBaseBackend() {
   return folly::EventBase::getDefaultBackend();
 }
 } // namespace
+
 #endif
 
 namespace proxygen {

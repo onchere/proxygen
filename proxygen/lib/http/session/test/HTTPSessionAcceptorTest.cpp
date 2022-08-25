@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under the BSD-style license found in the
@@ -127,10 +127,10 @@ TEST_P(HTTPSessionAcceptorTestNPN, Npn) {
   EXPECT_EQ(acceptor_->sessionCreationErrors_, 0);
 }
 
-char const* protos1[] = {"h2-14", "h2", "spdy/3.1", "spdy/3", "http/1.1", ""};
-INSTANTIATE_TEST_CASE_P(NPNPositive,
-                        HTTPSessionAcceptorTestNPN,
-                        ::testing::ValuesIn(protos1));
+std::array<char const*, 4> protos1{"h2-14", "h2", "http/1.1", ""};
+INSTANTIATE_TEST_SUITE_P(NPNPositive,
+                         HTTPSessionAcceptorTestNPN,
+                         ::testing::ValuesIn(protos1));
 
 // Verify HTTPSessionAcceptor creates the correct plaintext codec
 TEST_P(HTTPSessionAcceptorTestNPNPlaintext, PlaintextProtocols) {
@@ -151,10 +151,10 @@ TEST_P(HTTPSessionAcceptorTestNPNPlaintext, PlaintextProtocols) {
   EXPECT_EQ(acceptor_->sessionCreationErrors_, 0);
 }
 
-char const* protos2[] = {"spdy/3", "h2c"};
-INSTANTIATE_TEST_CASE_P(NPNPlaintext,
-                        HTTPSessionAcceptorTestNPNPlaintext,
-                        ::testing::ValuesIn(protos2));
+std::array<char const*, 1> protos2{"h2c"};
+INSTANTIATE_TEST_SUITE_P(NPNPlaintext,
+                         HTTPSessionAcceptorTestNPNPlaintext,
+                         ::testing::ValuesIn(protos2));
 
 // Verify HTTPSessionAcceptor closes the socket on invalid NPN
 TEST_F(HTTPSessionAcceptorTestNPNJunk, Npn) {
