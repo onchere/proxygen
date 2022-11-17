@@ -44,6 +44,7 @@ static const std::string kNoProtocolString("");
 static const std::string kH1QV1ProtocolString("h1q-fb");
 static const std::string kH1QV2ProtocolString("h1q-fb-v2");
 static const std::string kQUICProtocolName("QUIC");
+constexpr uint64_t kMaxQuarterStreamId = (1ull << 60) - 1;
 
 using namespace proxygen::HTTP3;
 bool noError(quic::QuicErrorCode error) {
@@ -758,10 +759,12 @@ void HQSession::GoawayUtils::sendGoaway(HQSession& session) {
   VLOG(3) << "generated GOAWAY maxStreamID=" << goawayStreamId
           << " sess=" << session;
 
+  auto totalStreamLength = *writeOffset + *writeBufferedBytes +
+                           connCtrlStream->writeBuf_.chainLength();
+  CHECK_GT(totalStreamLength, 0);
   auto res = session.sock_->registerDeliveryCallback(
       connCtrlStream->getEgressStreamId(),
-      *writeOffset + *writeBufferedBytes +
-          connCtrlStream->writeBuf_.chainLength(),
+      totalStreamLength - 1,
       connCtrlStream);
   if (res.hasError()) {
     // shortcut to shutdown
@@ -1443,6 +1446,7 @@ void HQSession::clearStreamCallbacks(quic::StreamId id) {
   if (sock_) {
     sock_->setReadCallback(id, nullptr, folly::none);
     sock_->setPeekCallback(id, nullptr);
+    sock_->setDSRPacketizationRequestSender(id, nullptr);
 
   } else {
     VLOG(4) << "Attempt to clear callbacks on closed socket";
@@ -2453,6 +2457,9 @@ HQSession::newTransaction(HTTPTransaction::Handler* handler) {
     // DestructorGuard dg(this);
     hqStream->txn_.setHandler(CHECK_NOTNULL(handler));
     sock_->setReadCallback(quicStreamId.value(), this);
+    if (ingressLimitExceeded()) {
+      sock_->pauseRead(quicStreamId.value());
+    }
     return &hqStream->txn_;
   } else {
     VLOG(3) << __func__ << "Failed to create new transaction on "
@@ -2868,6 +2875,7 @@ HQSession::HQStreamTransportBase::generateHeadersCommon(
   const uint64_t newOffset = streamWriteByteOffset();
   if (size) {
     VLOG(4) << "sending headers, size=" << size->compressed
+            << ", compressedBlock=" << size->compressedBlock
             << ", uncompressedSize=" << size->uncompressed << " txn=" << txn_;
   }
 
@@ -3251,6 +3259,9 @@ size_t HQSession::HQStreamTransportBase::sendBody(
   auto g = folly::makeGuard(setActiveCodec(__func__));
   CHECK(codecStreamId_);
 
+  codecFilterChain->generateBodyDSR(
+      *codecStreamId_, body.length, HTTPCodec::NoPadding, eom);
+
   uint64_t offset = streamWriteByteOffset();
   bufMeta_.length += body.length;
   bodyBytesEgressed_ += body.length;
@@ -3262,7 +3273,7 @@ size_t HQSession::HQStreamTransportBase::sendBody(
   }
 
   if (body.length && !txn->testAndSetFirstByteSent()) {
-    byteEventTracker_.addFirstBodyByteEvent(offset + 1, txn);
+    byteEventTracker_.addFirstBodyByteEvent(offset, txn);
   }
 
   auto sock = session_.sock_;
@@ -3327,7 +3338,7 @@ size_t HQSession::HQStreamTransportBase::sendBody(
         offset, encodedSize, &byteEventTracker_, txn);
   }
   if (encodedSize > 0 && !txn->testAndSetFirstByteSent()) {
-    byteEventTracker_.addFirstBodyByteEvent(offset + 1, txn);
+    byteEventTracker_.addFirstBodyByteEvent(offset, txn);
   }
   auto sock = session_.sock_;
   auto streamId = getStreamId();
@@ -3723,11 +3734,12 @@ void HQSession::onDatagramsAvailable() noexcept {
   for (auto& datagram : result.value()) {
     folly::io::Cursor cursor(datagram.get());
     auto quarterStreamId = quic::decodeQuicInteger(cursor);
-    if (!quarterStreamId) {
+    if (!quarterStreamId || quarterStreamId->first > kMaxQuarterStreamId) {
       dropConnectionAsync(
           quic::QuicError(HTTP3::ErrorCode::HTTP_GENERAL_PROTOCOL_ERROR,
                           "H3_DATAGRAM: error decoding stream-id"),
           kErrorConnection);
+      break;
     }
     auto ctxId = quic::decodeQuicInteger(cursor);
     if (!ctxId) {

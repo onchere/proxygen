@@ -174,6 +174,10 @@ class HTTPRequestVerifier {
     hasAuthority_ = hasAuthority;
   }
 
+  bool hasAuthority() const {
+    return hasAuthority_;
+  }
+
   void setHasUpgradeProtocol(bool val) {
     hasUpgradeProtocol_ = val;
   }

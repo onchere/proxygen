@@ -59,18 +59,19 @@ const std::string serverDownInfoStr(ServerDownInfo info);
 class ServerHealthCheckerCallback {
  public:
   // Additional info received from a successful healthcheck (e.g. HTTP headers)
-  using ExtraInfo = std::vector<std::pair<std::string, std::string>>;
+  using ExtraHeaders = std::vector<std::pair<std::string, std::string>>;
 
   virtual void processHealthCheckFailure(
       const TimePoint& startTime,
       ServerDownInfo reason,
-      const std::string& extraReasonStr = std::string()) = 0;
+      const std::string& extraReasonStr = std::string(),
+      const ExtraHeaders* extraHeaders = nullptr) = 0;
 
   virtual void processHealthCheckSuccess(
       const TimePoint& startTime,
       LoadType load,
       const ServerLoadInfo* serverLoadInfo = nullptr,
-      const ExtraInfo* extraInfo = nullptr) = 0;
+      const ExtraHeaders* extraHeaders = nullptr) = 0;
 
   virtual ~ServerHealthCheckerCallback() {
   }

@@ -51,6 +51,10 @@ HTTPTransactionHandler* Dispatcher::getRequestHandler(HTTPMessage* msg) {
     return new WaitReleaseHandler(
         folly::EventBaseManager::get()->getEventBase(), params_);
   }
+  if (boost::algorithm::starts_with(path, "/chunked")) {
+    return new ChunkedHandler(params_,
+                              folly::EventBaseManager::get()->getEventBase());
+  }
   if (boost::algorithm::starts_with(path, "/push")) {
     return new ServerPushHandler(params_);
   }
@@ -58,7 +62,10 @@ HTTPTransactionHandler* Dispatcher::getRequestHandler(HTTPMessage* msg) {
   if (!FLAGS_static_root.empty()) {
     return new StaticFileHandler(params_, FLAGS_static_root);
   }
-
+  if (boost::algorithm::starts_with(path, "/delay")) {
+    return new DelayHandler(params_,
+                            folly::EventBaseManager::get()->getEventBase());
+  }
   return new DummyHandler(params_);
 }
 

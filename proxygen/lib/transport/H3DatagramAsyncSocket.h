@@ -47,7 +47,16 @@ class H3DatagramAsyncSocket
  public:
   H3DatagramAsyncSocket(folly::EventBase* evb,
                         H3DatagramAsyncSocket::Options options);
-  ~H3DatagramAsyncSocket() override = default;
+
+  ~H3DatagramAsyncSocket() override {
+    if (txn_) {
+      txn_->setHandler(nullptr);
+    }
+    if (upstreamSession_) {
+      upstreamSession_->setConnectCallback(nullptr);
+      upstreamSession_->setInfoCallback(nullptr);
+    }
+  }
 
   /*
    * AsyncUDPSocket
@@ -136,7 +145,7 @@ class H3DatagramAsyncSocket
   }
 
   void close() override {
-    if (txn_) {
+    if (txn_ && !txn_->isEgressEOMSeen()) {
       txn_->sendEOM();
     }
     if (upstreamSession_) {

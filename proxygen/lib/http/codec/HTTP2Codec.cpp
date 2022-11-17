@@ -8,14 +8,14 @@
 
 #include <proxygen/lib/http/codec/HTTP2Codec.h>
 
+#include <folly/base64.h>
 #include <proxygen/lib/http/codec/CodecUtil.h>
 #include <proxygen/lib/http/codec/HTTP2Constants.h>
-#include <proxygen/lib/utils/Base64.h>
 #include <proxygen/lib/utils/Logging.h>
 
 #include <folly/Conv.h>
 #include <folly/Random.h>
-#include <folly/ThreadLocal.h>
+#include <folly/Try.h>
 #include <folly/io/Cursor.h>
 #include <folly/tracing/ScopedTraceSection.h>
 #include <type_traits>
@@ -26,14 +26,6 @@ using namespace folly;
 using std::string;
 
 namespace {
-std::string base64url_encode(ByteRange range) {
-  return proxygen::Base64::urlEncode(range);
-}
-
-std::string base64url_decode(const std::string& str) {
-  return proxygen::Base64::urlDecode(str);
-}
-
 const size_t kDefaultGrowth = 4000;
 constexpr auto kOkhttp2 = "okhttp/2";
 constexpr int kOkhttp2GoawayLogFreq = 1000;
@@ -548,14 +540,9 @@ HTTP2Codec::parseHeadersDecodeFrames(
   // decompress headers
   Cursor headerCursor(curHeaderBlock_.front());
 
-  // Validate circular dependencies.
-  if (priority && (curHeader_.stream == priority->streamDependency)) {
-    return folly::makeUnexpected(DeferredParseError(
-        ErrorCode::PROTOCOL_ERROR,
-        false,
-        folly::to<string>("Circular dependency for txn=", curHeader_.stream)));
-  }
-
+  // DO NOT return from this method until after the call to decodeStreaming
+  // unless you return a connection error.  Otherwise the HPACK state will
+  // get messed up.
   decodeInfo_.init(parsingReq_,
                    parsingDownstreamTrailers_,
                    validateHeaders_,
@@ -578,10 +565,17 @@ HTTP2Codec::parseHeadersDecodeFrames(
     // Avoid logging header blocks that have failed decoding due to being
     // excessively large.
     if (decodeInfo_.decodeError != HPACK::DecodeError::HEADERS_TOO_LARGE) {
-      LOG(ERROR) << decodeErrorMessage << curHeader_.stream << " header block=";
+      goawayErrorMessage_ =
+          folly::to<std::string>(decodeErrorMessage,
+                                 curHeader_.stream,
+                                 ": decompression error=",
+                                 uint32_t(decodeInfo_.decodeError));
+      LOG(ERROR) << goawayErrorMessage_
+                 << (VLOG_IS_ON(3) ? ", header block=" : "");
       VLOG(3) << IOBufPrinter::printHexFolly(curHeaderBlock_.front(), true);
     } else {
-      LOG(ERROR) << decodeErrorMessage << curHeader_.stream;
+      goawayErrorMessage_ = folly::to<std::string>(
+          decodeErrorMessage, curHeader_.stream, ": headers too large");
     }
 
     if (msg) {
@@ -590,6 +584,14 @@ HTTP2Codec::parseHeadersDecodeFrames(
     }
     return folly::makeUnexpected(DeferredParseError(
         ErrorCode::COMPRESSION_ERROR, true, empty_string, std::move(msg)));
+  }
+
+  // Validate circular dependencies.
+  if (priority && (curHeader_.stream == priority->streamDependency)) {
+    return folly::makeUnexpected(DeferredParseError(
+        ErrorCode::PROTOCOL_ERROR,
+        false,
+        folly::to<string>("Circular dependency for txn=", curHeader_.stream)));
   }
 
   // Check parsing error
@@ -776,17 +778,16 @@ ErrorCode HTTP2Codec::parseRstStream(Cursor& cursor) {
   auto err = http2::parseRstStream(cursor, curHeader_, statusCode);
   RETURN_IF_ERROR(err);
   if (statusCode == ErrorCode::PROTOCOL_ERROR) {
-    goawayErrorMessage_ =
-        folly::to<string>("GOAWAY error: RST_STREAM with code=",
-                          getErrorCodeString(statusCode),
-                          " for streamID=",
-                          curHeader_.stream,
-                          " user-agent=",
-                          userAgent_);
+    auto errorMsg = folly::to<string>("RST_STREAM with code=",
+                                      getErrorCodeString(statusCode),
+                                      " for streamID=",
+                                      curHeader_.stream,
+                                      " user-agent=",
+                                      userAgent_);
     int logFreq = userAgent_.find(kOkhttp2) == std::string::npos
                       ? 1
                       : kOkhttp2GoawayLogFreq;
-    VLOG_EVERY_N(2, logFreq) << goawayErrorMessage_;
+    VLOG_EVERY_N(2, logFreq) << errorMsg;
   }
   deliverCallbackIfAllowed(
       &HTTPCodec::Callback::onAbort, "onAbort", curHeader_.stream, statusCode);
@@ -1020,15 +1021,11 @@ ErrorCode HTTP2Codec::parseWindowUpdate(Cursor& cursor) {
     } else {
       // Parsing a zero delta window update should cause a protocol error
       // and send a rst stream
-      goawayErrorMessage_ =
-          folly::to<string>("parseWindowUpdate Invalid 0 length");
+      goawayErrorMessage_ = folly::to<std::string>(
+          "streamID=", curHeader_.stream, " with window update delta=", delta);
       VLOG(4) << goawayErrorMessage_;
-      streamError(folly::to<std::string>("streamID=",
-                                         curHeader_.stream,
-                                         " with HTTP2Codec stream error: ",
-                                         "window update delta=",
-                                         delta),
-                  ErrorCode::PROTOCOL_ERROR);
+      streamError(goawayErrorMessage_, ErrorCode::PROTOCOL_ERROR);
+      // Stream error and protocol error
       return ErrorCode::PROTOCOL_ERROR;
     }
   }
@@ -1138,7 +1135,9 @@ bool HTTP2Codec::onIngressUpgradeMessage(const HTTPMessage& msg) {
     return true;
   }
 
-  auto decoded = base64url_decode(settingsHeader);
+  auto decoded = folly::makeTryWith([&settingsHeader] {
+                   return folly::base64URLDecode(settingsHeader);
+                 }).value_or(std::string());
 
   // Must be well formed Base64Url and not too large
   if (decoded.empty() || decoded.length() > http2::kMaxFramePayloadLength) {
@@ -1465,6 +1464,10 @@ size_t HTTP2Codec::generateChunkTerminator(folly::IOBufQueue& /*writeBuf*/,
 size_t HTTP2Codec::generateTrailers(folly::IOBufQueue& writeBuf,
                                     StreamID stream,
                                     const HTTPHeaders& trailers) {
+  if (trailers.size() == 0) {
+    // No point in sending an empty trailer block, convert to EOM.
+    return generateEOM(writeBuf, stream);
+  }
   VLOG(4) << "generating TRAILERS for stream=" << stream;
   std::vector<compress::Header> allHeaders;
   CodecUtil::appendHeaders(trailers, allHeaders, HTTP_HEADER_NONE);
@@ -1691,10 +1694,9 @@ void HTTP2Codec::requestUpgrade(HTTPMessage& request) {
   IOBufQueue writeBuf{IOBufQueue::cacheChainLength()};
   generateDefaultSettings(writeBuf);
   writeBuf.trimStart(http2::kFrameHeaderSize);
-  auto buf = writeBuf.move();
-  buf->coalesce();
+  auto binarySettings = writeBuf.move()->to<std::string>();
   headers.set(http2::kProtocolSettingsHeader,
-              base64url_encode(folly::ByteRange(buf->data(), buf->length())));
+              folly::base64URLEncode(binarySettings));
   bool addSettings = !request.checkForHeaderToken(
       HTTP_HEADER_CONNECTION, http2::kProtocolSettingsHeader.c_str(), false);
   if (addUpgrade && addSettings) {

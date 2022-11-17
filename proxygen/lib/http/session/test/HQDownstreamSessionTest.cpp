@@ -2841,7 +2841,6 @@ TEST_P(HQDownstreamSessionTest, DelegateResponse) {
     CHECK(mockDsrRequestSender);
     EXPECT_CALL(*socketDriver_->getSocket(),
                 setDSRPacketizationRequestSender(_, _))
-        .Times(1)
         .WillOnce(Invoke(
             [&](StreamId,
                 std::unique_ptr<quic::DSRPacketizationRequestSender> sender) {
@@ -2875,6 +2874,8 @@ TEST_P(HQDownstreamSessionTest, DelegateResponse) {
     eventBase_.runInLoop([&] {
       ASSERT_TRUE(transportCallback_.lastByteFlushed_);
       handler->expectDetachTransaction();
+      EXPECT_CALL(*socketDriver_->getSocket(),
+                  setDSRPacketizationRequestSender(Eq(0), Eq(nullptr)));
     });
   });
   flushRequestsAndLoop();
@@ -2902,7 +2903,6 @@ TEST_P(HQDownstreamSessionTest, DelegateResponseError) {
     CHECK(mockDsrRequestSender);
     EXPECT_CALL(*socketDriver_->getSocket(),
                 setDSRPacketizationRequestSender(_, _))
-        .Times(1)
         .WillOnce(Invoke(
             [&](StreamId,
                 std::unique_ptr<quic::DSRPacketizationRequestSender> sender) {
@@ -2938,6 +2938,8 @@ TEST_P(HQDownstreamSessionTest, DelegateResponseError) {
       // Both onStopSending and terminate the handler can clear the buffered
       // BufMetas and make the transaction detachable.
       handler->expectDetachTransaction();
+      EXPECT_CALL(*socketDriver_->getSocket(),
+                  setDSRPacketizationRequestSender(Eq(0), Eq(nullptr)));
       hqSession_->onStopSending(streamId,
                                 HTTP3::ErrorCode::HTTP_REQUEST_REJECTED);
     });
@@ -3417,7 +3419,7 @@ TEST_P(HQDownstreamSessionTestHQDeliveryAck,
             socketDriver->checkNotReadOnlyStream(id);
             auto it = socketDriver->streams_.find(id);
             if (it == socketDriver->streams_.end() ||
-                it->second.writeOffset >= offset) {
+                it->second.nextWriteOffset >= offset) {
               return folly::makeUnexpected(LocalErrorCode::STREAM_NOT_EXISTS);
             }
             CHECK_NE(it->second.writeState,
@@ -3576,7 +3578,7 @@ TEST_P(HQDownstreamSessionTestHQDeliveryAck, TestBodyDeliveryErr) {
             socketDriver->checkNotReadOnlyStream(id);
             auto it = socketDriver->streams_.find(id);
             if (it == socketDriver->streams_.end() ||
-                it->second.writeOffset >= offset) {
+                it->second.nextWriteOffset >= offset) {
               return folly::makeUnexpected(LocalErrorCode::STREAM_NOT_EXISTS);
             }
             CHECK_NE(it->second.writeState,
